@@ -4,7 +4,7 @@ package dev.handeye.device
 interface HandeyeHttpServer {
     fun start(port: Int)
     fun stop()
-    fun registerHandler(method: String, path: String, handler: (HttpRequest) -> HttpResponse)
+    fun registerHandler(method: String, path: String, handler: suspend (HttpRequest) -> HttpResponse)
 }
 
 data class HttpRequest(

@@ -40,4 +40,8 @@ android {
     defaultConfig {
         minSdk = libs.versions.android.min.get().toInt()
     }
+    testOptions {
+        // 本地单测跑在 mockable android.jar 上（android.os.Process.myPid 等返回默认值）
+        unitTests.isReturnDefaultValues = true
+    }
 }

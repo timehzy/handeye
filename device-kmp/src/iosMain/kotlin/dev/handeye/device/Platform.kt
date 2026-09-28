@@ -9,3 +9,6 @@ internal actual fun platformProcessId(): Int =
 
 internal actual fun platformEnabledSignal(): String? =
     NSProcessInfo.processInfo.environment["HANDEYE_ENABLED"] as? String
+
+internal actual fun createPlatformServer(): HandeyeHttpServer =
+    throw IllegalStateException("inject HandeyeHttpServer via HandeyeInstaller.install(server = ...)")
