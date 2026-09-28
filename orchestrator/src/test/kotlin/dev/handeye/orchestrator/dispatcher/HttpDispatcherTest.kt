@@ -28,12 +28,9 @@ class HttpDispatcherTest {
         server.setIntentHandler(HttpHandler { ex ->
             val body = ex.requestBody.readBytes().toString(Charsets.UTF_8)
             val json = Json.parseToJsonElement(body).jsonObject
-            server.receivedIntents += "/intent" to json
-            val action = json["class"]?.jsonPrimitive?.content ?: ""
+            server.receivedIntents += "/cmd" to json
             val response = buildJsonObject {
-                put("dispatched", true)
-                put("consumerTag", action.substringBefore(".").lowercase())
-                put("stateSnapshot", buildJsonObject { put("handled", true) })
+                put("accepted", true)
             }
             MockDebugServer.writeJson(ex, 200, response.toString())
         })
@@ -54,15 +51,14 @@ class HttpDispatcherTest {
         val result = dispatcher.dispatch("AspectRatio.Select", payload)
 
         assertTrue(result.dispatched)
-        assertEquals("aspectratio", result.consumerTag)
-        assertNotNull(result.stateSnapshot)
-        assertEquals(true, result.stateSnapshot!!["handled"]?.jsonPrimitive?.content?.toBooleanStrictOrNull())
+        assertNull(result.consumerTag)
+        assertNull(result.stateSnapshot)
         assertNull(result.errorMessage)
 
         assertEquals(1, server.receivedIntents.size)
         val (path, body) = server.receivedIntents.first()
-        assertEquals("/intent", path)
-        assertEquals("AspectRatio.Select", body["class"]?.jsonPrimitive?.content)
+        assertEquals("/cmd", path)
+        assertEquals("AspectRatio.Select", body["key"]?.jsonPrimitive?.content)
         assertEquals(payload, body["args"]?.jsonObject)
     }
 

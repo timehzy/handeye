@@ -5,7 +5,7 @@ import dev.handeye.orchestrator.dispatcher.HttpDispatcher
 import dev.handeye.orchestrator.events.HttpEventsFetcher
 import dev.handeye.orchestrator.factsource.HttpFactSource
 import dev.handeye.orchestrator.http.OrchestratorHttpClient
-import dev.handeye.orchestrator.runner.hostVmTest
+import dev.handeye.orchestrator.runner.handeyeTest
 import com.sun.net.httpserver.HttpHandler
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.add
@@ -26,11 +26,11 @@ import kotlin.test.assertTrue
  * Task E1 · MockDebugServer 升级冒烟测试
  *
  * 目标：证明 [MockDebugServer] 6 个端点（`/health` / `/reset` / `/intent` / `/state` /
- * `/editmodule` / `/player`）能被 `hostVmTest` 的 6 阶段流程（PRE-RESET → GIVEN → ACT →
+ * `/editmodule` / `/player`）能被 `handeyeTest` 的 6 阶段流程（PRE-RESET → GIVEN → ACT →
  * OBSERVE+PROJECT → ASSERT → REPORT）端到端跑通，且返回 schema 匹配 B1/B2/B3 契约。
  *
  * ## 覆盖点
- * 1. `/health` 返 200 → hostVmTest Phase 1 PRE-RESET 的 `checkHealth()` 不 throw
+ * 1. `/health` 返 200 → handeyeTest Phase 1 PRE-RESET 的 `checkHealth()` 不 throw
  * 2. `POST /reset?mode=events` 返 `{ok:true, resetEvents:true}` → Phase 1 `resetEvents()` 不 throw
  * 3. `POST /reset?mode=full` 返 400 `{ok:false, error:...}` —— B3 契约
  * 4. `POST /intent` 走 [MockDebugServer.setIntentHandler] 装的 handler，返 dispatched=true
@@ -93,7 +93,7 @@ class MockDebugServerE1SmokeTest {
     }
 
     @Test
-    fun hostVmTest_drives_mock_through_health_reset_intent_and_three_source_observe() {
+    fun handeyeTest_drives_mock_through_health_reset_intent_and_three_source_observe() {
         val http = OrchestratorHttpClient(server.baseUrl)
         val ctx = E2eContext(
             dispatcher = HttpDispatcher(http),
@@ -110,7 +110,7 @@ class MockDebugServerE1SmokeTest {
                 check(http.post("/reset", "{}", mapOf("mode" to "events")).statusCode == 200)
             },
         )
-        val result = hostVmTest(
+        val result = handeyeTest(
             name = "smoke_mock_wire",
             ctx = ctx,
             block = {
@@ -137,7 +137,7 @@ class MockDebugServerE1SmokeTest {
 
     @Test
     fun reset_with_invalid_mode_returns_400() {
-        // 直接走 HTTP 验 mode=full 走 B3 契约 400 路径 —— hostVmTest 只用默认 mode=events，
+        // 直接走 HTTP 验 mode=full 走 B3 契约 400 路径 —— handeyeTest 只用默认 mode=events，
         // 需要独立验证 mode 校验分支。
         val http = OrchestratorHttpClient(server.baseUrl)
         val resp = http.post("/reset", body = "", query = mapOf("mode" to "full"))

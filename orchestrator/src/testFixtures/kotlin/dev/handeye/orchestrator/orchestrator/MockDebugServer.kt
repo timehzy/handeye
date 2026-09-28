@@ -66,10 +66,10 @@ class MockDebugServer(port: Int = 0) {
 
     /**
      * `/state` 端点返回的 state JsonObject —— endpoint 会 wrap 成 `{"state": <此对象>}` 返回。
-     * D-series hostVmTest scenario 直接吃这个 JsonObject 走 `BusinessFactProjection.projectUiState`
+     * D-series handeyeTest scenario 直接吃这个 JsonObject 走 `BusinessFactProjection.projectUiState`
      * 投影。
      *
-     * 用法：hostVmTest 场景
+     * 用法：handeyeTest 场景
      * ```
      * server.currentState = buildJsonObject { put("aspectRatioState", ...) }
      * ```
@@ -211,7 +211,7 @@ class MockDebugServer(port: Int = 0) {
             writeJson(ex, status, body)
         })
         // /intent 走 wrapper 转发到 intentHandler，允许后置 setIntentHandler 热替换
-        server.createContext("/intent", HttpHandler { ex -> intentHandler.handle(ex) })
+        server.createContext("/cmd", HttpHandler { ex -> intentHandler.handle(ex) })
         server.createContext("/events", HttpHandler { ex -> eventsHandler.handle(ex) })
         server.createContext("/state") { ex ->
             // B1 [StateEndpoint] 契约：`body["state"]` 是 JsonObject。

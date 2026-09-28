@@ -14,7 +14,7 @@ import kotlin.time.Duration
  * PR1 Task9 新增 API 的编译期 / 内存行为单测。
  *
  * 不依赖运行中的应用，只验证 DSL 收集行为、[ExpectDependencyScope] 注册机制等价性、
- * 以及 [hostVmTest] 泛型重载的编译期存在性。
+ * 以及 [handeyeTest] 泛型重载的编译期存在性。
  */
 class HostVmTestGenericTest {
 
@@ -67,9 +67,9 @@ class HostVmTestGenericTest {
     }
 
     @Test
-    fun `generic hostVmTest overload exists without invoking TODO body`() {
+    fun `generic handeyeTest overload exists without invoking TODO body`() {
         val ref: (String, E2eContext, ScenarioScope<E2eContext>.() -> Unit, Duration?) -> ScenarioResult =
-            { name, ctx, block, timeout -> hostVmTest<E2eContext>(name, ctx, block, timeout) }
+            { name, ctx, block, timeout -> handeyeTest<E2eContext>(name, ctx, block, timeout) }
         assertNotNull(ref)
     }
 }

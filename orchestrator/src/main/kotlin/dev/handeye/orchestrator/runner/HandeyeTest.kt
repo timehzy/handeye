@@ -10,7 +10,7 @@ import java.time.LocalDateTime
 import kotlin.time.Duration
 import kotlin.time.TimeSource
 
-/** Result of one [hostVmTest] execution. */
+/** Result of one [handeyeTest] execution. */
 data class ScenarioResult(
     val name: String,
     val pass: Boolean,
@@ -23,7 +23,7 @@ data class ScenarioResult(
  * typed accessors and business assertions.
  */
 @Suppress("FINAL_UPPER_BOUND")
-inline fun <reified Ctx : E2eContext> hostVmTest(
+inline fun <reified Ctx : E2eContext> handeyeTest(
     name: String,
     ctx: Ctx,
     noinline block: ScenarioScope<Ctx>.() -> Unit,

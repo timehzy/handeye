@@ -20,7 +20,7 @@ import kotlinx.serialization.json.jsonObject
  * 用法：
  * ```
  * val http = OrchestratorHttpClient("http://<host>:<port>")
- * val resp = http.post("/<endpoint>", """{"class":"...","args":{}}""")
+ * val resp = http.post("/<endpoint>", """{"key":"...","args":{}}""")
  * check(resp.statusCode == 200)
  * ```
  */

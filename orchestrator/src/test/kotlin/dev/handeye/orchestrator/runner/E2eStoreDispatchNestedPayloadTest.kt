@@ -46,10 +46,9 @@ class E2eStoreDispatchNestedPayloadTest {
         server.setIntentHandler(HttpHandler { ex ->
             val body = ex.requestBody.readBytes().toString(Charsets.UTF_8)
             val json = Json.parseToJsonElement(body).jsonObject
-            server.receivedIntents += "/intent" to json
+            server.receivedIntents += "/cmd" to json
             val response = buildJsonObject {
-                put("dispatched", true)
-                put("consumerTag", "test")
+                put("accepted", true)
             }
             MockDebugServer.writeJson(ex, 200, response.toString())
         })
@@ -96,8 +95,8 @@ class E2eStoreDispatchNestedPayloadTest {
 
         assertEquals(1, server.receivedIntents.size, "预期恰好 1 次 /intent POST")
         val (path, body) = server.receivedIntents[0]
-        assertEquals("/intent", path)
-        assertEquals("Timeline.TrimEnd", body["class"]?.jsonPrimitive?.contentOrNull)
+        assertEquals("/cmd", path)
+        assertEquals("Timeline.TrimEnd", body["key"]?.jsonPrimitive?.contentOrNull)
         val args = body["args"]?.jsonObject ?: error("body.args 未落成 JsonObject")
 
         val target = args["target"]?.jsonObject
@@ -165,7 +164,7 @@ class E2eStoreDispatchNestedPayloadTest {
         )
 
         val (_, body) = server.receivedIntents.single()
-        assertEquals("Speed.TrimSection", body["class"]?.jsonPrimitive?.contentOrNull)
+        assertEquals("Speed.TrimSection", body["key"]?.jsonPrimitive?.contentOrNull)
         val args = body["args"]?.jsonObject ?: error("body.args 未落成 JsonObject")
         assertEquals(3L, args["sectionId"]?.jsonPrimitive?.longOrNull)
         assertEquals(100.5, args["newStartTimeMs"]?.jsonPrimitive?.doubleOrNull)

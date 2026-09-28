@@ -106,7 +106,7 @@ fun ScenarioRunner.cli(args: Array<String>) {
     if (args.any { it == "--record" || it == "--force" }) {
         System.err.println(
             "[DEPRECATED] --record / --force 已下线：" +
-                "场景断言由 hostVmTest expectFact / expectDependencies 直接完成。" +
+                "场景断言由 handeyeTest expectFact / expectDependencies 直接完成。" +
                 "请更新调用脚本移除这两个 flag。",
         )
         exitProcess(2)
@@ -472,7 +472,7 @@ internal fun computeExitCode(results: List<ScenarioResult>): Int =
  * ## FAIL 现场保留
  *
  * FAIL 时 orchestrator **不**主动 kill App；只打印通用 target 信息。原始诊断由 scenario 的
- * [E2eContext] 提供并由 hostVmTest 落盘，orchestrator 不解释 host 控制面或 artifact 类型。
+ * [E2eContext] 提供并由 handeyeTest 落盘，orchestrator 不解释 host 控制面或 artifact 类型。
  *
  * @param onFail FAIL 时被调，接收 baseUrl → 打印现场保留信息。生产走
  *   [defaultFailContextPrinter]；单测传 no-op 或 spy 断言调用即可。
@@ -521,7 +521,7 @@ internal fun runOne(
         println("[QUIT] 场景 ${meta.name} 被用户主动退出")
         RunOutcome.QUIT
     } catch (t: Throwable) {
-        // hostVmTest 内部已经把大部分异常写进 reporter，这里的兜底路径主要覆盖：runner 自身
+        // handeyeTest 内部已经把大部分异常写进 reporter，这里的兜底路径主要覆盖：runner 自身
         // 的执行异常（例如 session.runScenario 的 ThreadLocal 设置失败）、旧兼容代码抛的
         // AssertionError 等。合成一个失败 [ScenarioResult]，让汇总链路语义闭合。
         // 走 stdout 保证与其它 [PASS]/[FAIL] 单流顺序；stack trace 仍打 stderr（不需要顺序对齐）

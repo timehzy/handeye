@@ -44,7 +44,7 @@ class HostVmTestBaselineResetTest {
             },
         )
 
-        val result = hostVmTest(
+        val result = handeyeTest(
             name = "baseline_ordering",
             ctx = ctx,
             block = {
@@ -68,7 +68,7 @@ class HostVmTestBaselineResetTest {
             baselineReset = null,
         )
 
-        val result = hostVmTest(
+        val result = handeyeTest(
             name = "baseline_absent",
             ctx = ctx,
             block = {
@@ -99,7 +99,7 @@ class HostVmTestBaselineResetTest {
             },
         )
 
-        val result = hostVmTest(
+        val result = handeyeTest(
             name = "baseline_failure_shortcircuit",
             ctx = ctx,
             block = {
