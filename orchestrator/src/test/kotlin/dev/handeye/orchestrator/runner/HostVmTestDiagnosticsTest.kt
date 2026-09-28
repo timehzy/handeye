@@ -17,7 +17,7 @@ import kotlin.test.assertFalse
 class HostVmTestDiagnosticsTest {
 
     @Test
-    fun `generic hostVmTest writes context-provided raw failure artifacts`() {
+    fun `generic handeyeTest writes context-provided raw failure artifacts`() {
         val artifactsRoot = Files.createTempDirectory("host-vm-diagnostics").toFile()
         val originalRoot = System.getProperty("e2e.artifactsRoot")
         try {
@@ -40,7 +40,7 @@ class HostVmTestDiagnosticsTest {
                 ),
             )
 
-            val result = hostVmTest(
+            val result = handeyeTest(
                 name = "context_diagnostics",
                 ctx = ctx,
                 block = {

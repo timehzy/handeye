@@ -274,7 +274,7 @@ class ScenarioRunnerCliTest {
 
     @Test
     fun `runOne FAIL 场景 - 抛 AssertionError 归为 RunOutcome FAIL 并调 onFail`() {
-        // AssertionError 是 hostVmTest 已收敛的路径；此 case 兜底：runner 层若真拿到未预期
+        // AssertionError 是 handeyeTest 已收敛的路径；此 case 兜底：runner 层若真拿到未预期
         // 异常仍要转成 FAIL，避免因兼容问题让整条流水静默 exit 0。
         val meta = ScenarioMeta(
             name = "test_fail_assertion",

@@ -2,7 +2,7 @@ package dev.handeye.orchestrator.runner
 
 import dev.handeye.orchestrator.context.E2eContext
 
-/** DSL state collected by the generic [hostVmTest] entry point. */
+/** DSL state collected by the generic [handeyeTest] entry point. */
 class ScenarioScope<Ctx : E2eContext>(val ctx: Ctx) {
 
     @PublishedApi

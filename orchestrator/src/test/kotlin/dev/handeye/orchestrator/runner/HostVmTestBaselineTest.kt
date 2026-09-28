@@ -12,7 +12,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * hostVmTest baseline 采集语义单测 —— Phase 2.5（given 后、act 前）快照是关系断言的基准点。
+ * handeyeTest baseline 采集语义单测 —— Phase 2.5（given 后、act 前）快照是关系断言的基准点。
  *
  * 覆盖：
  * - baseline 反映 post-given / pre-act 的态（既不吃 act 的变化，也不漏 given 的变化）
@@ -41,7 +41,7 @@ class HostVmTestBaselineTest {
         )
 
         var capturedBaseline: Map<String, Any?>? = null
-        val result = hostVmTest(
+        val result = handeyeTest(
             name = "baseline-timing",
             ctx = ctx,
             block = {
@@ -73,7 +73,7 @@ class HostVmTestBaselineTest {
             onDispatch = { intentCalls++ },
         )
 
-        val result = hostVmTest(
+        val result = handeyeTest(
             name = "baseline-fail",
             ctx = ctx,
             block = {
@@ -105,7 +105,7 @@ class HostVmTestBaselineTest {
             },
         )
 
-        val result = hostVmTest(
+        val result = handeyeTest(
             name = "baseline-skipped",
             ctx = ctx,
             block = {

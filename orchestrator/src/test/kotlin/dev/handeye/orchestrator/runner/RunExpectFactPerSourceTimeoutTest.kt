@@ -34,7 +34,7 @@ class RunExpectFactPerSourceTimeoutTest {
             override suspend fun fetch() = TestFact(0)
         }
 
-        val result = hostVmTest(
+        val result = handeyeTest(
             name = "isolated-source-failure",
             ctx = context(broken, healthy),
             block = {
@@ -54,7 +54,7 @@ class RunExpectFactPerSourceTimeoutTest {
 
     @Test
     fun `short failing source timeout is not extended by long passing source timeout`() {
-        val result = hostVmTest(
+        val result = handeyeTest(
             name = "short-fail-long-pass",
             ctx = context(primary = 99, secondary = 0),
             block = {
@@ -73,7 +73,7 @@ class RunExpectFactPerSourceTimeoutTest {
 
     @Test
     fun `second source can own the short independent timeout`() {
-        val result = hostVmTest(
+        val result = handeyeTest(
             name = "long-pass-short-fail",
             ctx = context(primary = 1, secondary = 99),
             block = {
@@ -92,7 +92,7 @@ class RunExpectFactPerSourceTimeoutTest {
 
     @Test
     fun `all sources satisfying immediately returns fast`() {
-        val result = hostVmTest(
+        val result = handeyeTest(
             name = "all-pass",
             ctx = context(primary = 1, secondary = 0),
             block = {

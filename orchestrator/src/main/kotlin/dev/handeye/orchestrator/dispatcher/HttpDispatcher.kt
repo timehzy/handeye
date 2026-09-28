@@ -1,37 +1,34 @@
 package dev.handeye.orchestrator.dispatcher
 
 import dev.handeye.orchestrator.http.OrchestratorHttpClient
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 
 /**
- * 基于 HTTP POST 的 [Dispatcher] 默认实现。
+ * 基于 HTTP POST 的 [Dispatcher] 默认实现，走协议 v1 的 `/cmd` 端点。
  *
  * 请求体格式：
  * ```json
- * {"class":"<action>","args":<payload>}
+ * {"key":"<action>","args":<payload>}
  * ```
- * 响应体按设备端 `/intent` 契约解析 `dispatched` / `consumerTag` / `stateSnapshot` /
- * `errorMessage` 字段。`stateSnapshot` 兼容 JsonObject 与 JSON 字符串两种返回形态。
+ * 响应体解析 `accepted` / `error` 字段。协议 v1 的 /cmd 仅 ack 入队，不返回状态快照，
+ * 因此 [DispatchResult.stateSnapshot] 恒为 null。
  *
- * @param httpClient 已配置好 baseUrl 的 [OrchestratorHttpClient]
- * @param endpointPath POST 目标路径，默认 `/intent`
+ * @param httpClient 已配置好 baseUrl的 [OrchestratorHttpClient]
+ * @param endpointPath POST 目标路径，默认 `/cmd`
  */
 class HttpDispatcher(
     private val httpClient: OrchestratorHttpClient,
-    private val endpointPath: String = "/intent",
+    private val endpointPath: String = "/cmd",
     private val controlEndpointPath: String = "/control",
 ) : Dispatcher {
 
     override suspend fun dispatch(action: String, payload: JsonObject): DispatchResult {
         val body = buildJsonObject {
-            put("class", JsonPrimitive(action))
+            put("key", action)
             put("args", payload)
         }
         val response = httpClient.postJson(endpointPath, body)
@@ -42,19 +39,11 @@ class HttpDispatcher(
                 errorMessage = "no response",
             )
         return DispatchResult(
-            dispatched = response["dispatched"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false,
-            consumerTag = response["consumerTag"]?.jsonPrimitive?.contentOrNull,
-            stateSnapshot = parseStateSnapshot(response["stateSnapshot"]),
-            errorMessage = response["errorMessage"]?.jsonPrimitive?.contentOrNull,
+            dispatched = response["accepted"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false,
+            consumerTag = null,
+            stateSnapshot = null,
+            errorMessage = response["error"]?.jsonPrimitive?.contentOrNull,
         )
-    }
-
-    private fun parseStateSnapshot(element: JsonElement?): JsonObject? = when (element) {
-        is JsonObject -> element
-        is JsonPrimitive -> runCatching {
-            Json.parseToJsonElement(element.content).jsonObject
-        }.getOrNull()
-        else -> null
     }
 
     /**
@@ -65,7 +54,7 @@ class HttpDispatcher(
      */
     override suspend fun dispatchControl(path: String, payload: JsonObject): DispatchResult {
         val body = buildJsonObject {
-            put("name", JsonPrimitive(path))
+            put("name", path)
             put("args", payload)
         }
         val response = httpClient.postJson(controlEndpointPath, body)
