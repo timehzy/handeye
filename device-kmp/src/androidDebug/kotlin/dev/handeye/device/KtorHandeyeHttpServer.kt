@@ -18,7 +18,7 @@ class KtorHandeyeHttpServer : HandeyeHttpServer {
     private data class HandlerEntry(
         val method: String,
         val path: String,
-        val handler: (HttpRequest) -> HttpResponse,
+        val handler: suspend (HttpRequest) -> HttpResponse,
     )
 
     private val handlers = mutableListOf<HandlerEntry>()
@@ -26,7 +26,7 @@ class KtorHandeyeHttpServer : HandeyeHttpServer {
     @Volatile
     private var engine: ApplicationEngine? = null
 
-    override fun registerHandler(method: String, path: String, handler: (HttpRequest) -> HttpResponse) {
+    override fun registerHandler(method: String, path: String, handler: suspend (HttpRequest) -> HttpResponse) {
         handlers += HandlerEntry(method, path, handler)
     }
 
@@ -62,3 +62,5 @@ class KtorHandeyeHttpServer : HandeyeHttpServer {
         engine = null
     }
 }
+
+internal actual fun createPlatformServer(): HandeyeHttpServer = KtorHandeyeHttpServer()
