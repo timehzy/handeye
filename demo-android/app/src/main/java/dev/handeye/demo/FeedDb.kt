@@ -43,6 +43,17 @@ class FeedDb(context: Context) : SQLiteOpenHelper(context, "feed.db", null, 1) {
         }
     }
 
+    fun loadAll(): List<FeedItem> =
+        readableDatabase.use { db ->
+            db.rawQuery("SELECT id, title, liked FROM feed ORDER BY id", null).use { cursor ->
+                buildList {
+                    while (cursor.moveToNext()) {
+                        add(FeedItem(cursor.getInt(0), cursor.getString(1), cursor.getInt(2) == 1))
+                    }
+                }
+            }
+        }
+
     fun count(): Int =
         readableDatabase.use { db ->
             db.rawQuery("SELECT COUNT(*) FROM feed", null).use { cursor ->

@@ -31,6 +31,9 @@ class OrchestratorHttpClient(
 ) {
     private val http: java.net.http.HttpClient = java.net.http.HttpClient.newBuilder()
         .connectTimeout(Duration.ofMillis(timeoutMs))
+        // 强制 HTTP/1.1：默认的 HTTP/2 协商会被 device 端内嵌 server（Ktor CIO）忽略 Upgrade
+        //  header 而挂起请求直到超时，adb forward 链路下必现。
+        .version(java.net.http.HttpClient.Version.HTTP_1_1)
         .build()
 
     private val json = Json { ignoreUnknownKeys = true }

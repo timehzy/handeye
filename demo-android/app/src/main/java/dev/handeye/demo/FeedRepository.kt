@@ -3,6 +3,7 @@ package dev.handeye.demo
 import android.content.Context
 import android.util.LruCache
 import dev.handeye.device.EventRecorder
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
@@ -20,7 +21,52 @@ class FeedRepository(
     val cache = LruCache<Int, FeedItem>(200)
     private val db = FeedDb(context)
 
-    suspend fun refresh(): List<FeedItem> = withContext(Dispatchers.IO) {
+    // 进行中的 refresh 共享同一次结果（single-flight）：并发触发不重复打网络、不重复写库。
+    private val refreshMonitor = Any()
+    private var refreshInFlight: CompletableDeferred<List<FeedItem>>? = null
+
+    suspend fun refresh(): List<FeedItem> {
+        val flight: CompletableDeferred<List<FeedItem>>
+        val owner: Boolean
+        synchronized(refreshMonitor) {
+            val existing = refreshInFlight
+            if (existing != null) {
+                flight = existing
+                owner = false
+            } else {
+                flight = CompletableDeferred()
+                refreshInFlight = flight
+                owner = true
+            }
+        }
+        if (!owner) return flight.await()
+        try {
+            val items = doRefresh()
+            flight.complete(items)
+            return items
+        } catch (t: Throwable) {
+            flight.completeExceptionally(t)
+            throw t
+        } finally {
+            synchronized(refreshMonitor) { if (refreshInFlight === flight) refreshInFlight = null }
+        }
+    }
+
+    /**
+     * 冷启动装载：内存缓存非空直接用；否则从持久化回填内存。无数据来源返 null。
+     * 全程不打网络 —— 网络只在用户主动刷新时发生。
+     */
+    suspend fun loadInitial(): List<FeedItem>? = withContext(Dispatchers.IO) {
+        val cached = cache.snapshot().values.sortedBy { it.id }
+        if (cached.isNotEmpty()) return@withContext cached
+        val persisted = db.loadAll()
+        if (persisted.isEmpty()) return@withContext null
+        persisted.forEach { cache.put(it.id, it) }
+        recorder.record("cacheWrite", "feed", buildJsonObject { put("entryCount", cache.size()) })
+        persisted
+    }
+
+    private suspend fun doRefresh(): List<FeedItem> = withContext(Dispatchers.IO) {
         val page = api.fetchPage(1)
         page.items.forEach { cache.put(it.id, it) }
         recorder.record("cacheWrite", "feed", buildJsonObject { put("entryCount", cache.size()) })
@@ -40,7 +86,8 @@ class FeedRepository(
     }
 
     fun snapshotCache(): JsonArray = buildJsonArray {
-        cache.snapshot().values.forEach { item ->
+        // 按 id 排序输出，与 persist 源的 ORDER BY id 对齐，保证两源快照可直接比对。
+        cache.snapshot().values.sortedBy { it.id }.forEach { item ->
             add(buildJsonObject {
                 put("id", item.id)
                 put("title", item.title)
