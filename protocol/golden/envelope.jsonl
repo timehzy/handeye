@@ -1,0 +1,6 @@
+{"seq":1,"t":0,"kind":"intent","name":"Feed.Refresh"}
+{"seq":2,"t":4,"kind":"networkRequest","name":"GET /feed","payload":{"page":1}}
+{"seq":3,"t":18,"kind":"networkResponse","name":"GET /feed","payload":{"status":200}}
+{"seq":4,"t":19,"kind":"cacheWrite","name":"feed","payload":{"entryCount":20}}
+{"seq":5,"t":21,"kind":"dbWrite","name":"feed","payload":{"rowCount":20}}
+{"seq":6,"t":34,"kind":"state","name":"FeedUiState","payload":{"listSize":20,"isLoading":false}}

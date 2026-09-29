@@ -1,0 +1,6 @@
+{"seq":1,"t":4,"kind":"state","name":"FeedUiState","payload":{"name":"FeedUiState","isLoading":true,"listSize":0,"error":null}}
+{"seq":2,"t":8,"kind":"networkRequest","name":"GET /feed","payload":{"page":1}}
+{"seq":3,"t":22,"kind":"networkResponse","name":"GET /feed","payload":{"status":200}}
+{"seq":4,"t":23,"kind":"cacheWrite","name":"feed","payload":{"entryCount":20}}
+{"seq":5,"t":27,"kind":"dbWrite","name":"feed","payload":{"rowCount":20}}
+{"seq":6,"t":40,"kind":"state","name":"FeedUiState","payload":{"name":"FeedUiState","isLoading":false,"listSize":20,"error":null}}
