@@ -16,6 +16,15 @@ class FeedViewModel(private val repo: FeedRepository) : ViewModel() {
     private val _uiState = MutableStateFlow(FeedUiState())
     val uiState: StateFlow<FeedUiState> = _uiState
 
+    init {
+        // 冷启动：内存/持久化有数据就直接恢复，不触发网络请求。
+        viewModelScope.launch {
+            repo.loadInitial()?.let { items ->
+                _uiState.value = FeedUiState(isLoading = false, items = items)
+            }
+        }
+    }
+
     fun onRefresh() {
         _uiState.value = _uiState.value.copy(isLoading = true, error = null)
         viewModelScope.launch {
@@ -40,7 +49,10 @@ class FeedViewModel(private val repo: FeedRepository) : ViewModel() {
     }
 
     fun onClearAll() {
-        viewModelScope.launch { repo.clearAll() }
+        viewModelScope.launch {
+            repo.clearAll()
+            _uiState.value = FeedUiState()
+        }
     }
 
     fun onDropMemoryCache() {
