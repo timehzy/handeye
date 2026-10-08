@@ -76,7 +76,8 @@ if [ $# -gt 0 ] && [ "$1" = "snapshot" ]; then
     [ -f "$f" ] || { printf '错误: 文件不存在: %s\n' "$f" >&2; exit 2; }
   done
   cd "$HANDEYE_ROOT"
-  exec ./gradlew :demo-android:e2e:run --args="snapshot diff $1 $2" \
+  # 路径用 \" 包进 --args：gradle 拆分参数时剥离这层引号，带空格路径才不会被切断
+  exec ./gradlew :demo-android:e2e:run --args="snapshot diff \"$1\" \"$2\"" \
     -Dorg.gradle.configuration-cache=false --console=plain -q
 fi
 
@@ -206,6 +207,8 @@ check_integration() {
 # 同时承担 scenario/tag 合法性校验（未注册在这里就报错，不等跑批）。
 
 gradle_plan() { # $1 = selector 串（如 "--all" / "--tag smoke" / "select_ratio"）
+  # $1 是脚本内构造的受控 token（selector 语义含空格，如 "--tag smoke"），故意分词展开
+  # shellcheck disable=SC2086
   ( cd "$HANDEYE_ROOT" && ./gradlew :demo-android:e2e:run \
       --args="--print-bootstrap-plan $1" \
       -Dorg.gradle.configuration-cache=false --console=plain -q )
@@ -367,6 +370,9 @@ cleanup() {
   fi
   if [ "${FORWARD_CREATED:-0}" = "1" ] && [ -n "${HOST_PORT:-}" ]; then
     printf '\n==> 清理 adb forward tcp:%s\n' "$HOST_PORT"
+    # 故意用裸 adb 而非 $ADB：adb forward --remove 是 host 侧操作，与设备无关，但需要
+    # preflight 里 export 的 ANDROID_SERIAL 才能在多机时命中同一台设备——这是隐式耦合，
+    # 别为了「统一风格」改成 $ADB（cleanup 时 $ADB 变量可能已不可用，且语义本就不依赖 -s）
     adb forward --remove "tcp:$HOST_PORT" 2>/dev/null || true
   fi
 }
