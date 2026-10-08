@@ -458,6 +458,7 @@ ensure_bootstrap_demo() { # $1 = source（plan source 列：沙盒相对段，�
   log "bootstrap: bootstrap_android.sh $INSTALL_FLAGS ${args[*]:-}"
   # $INSTALL_FLAGS 是脚本内构造的受控 token（空 / "--skip-build --skip-install"），需词分割展开
   # shellcheck disable=SC2086
+  # 已知限制：stdout 被整体捕获、批末回放，stderr 实时穿透——bootstrap 失败时日志时间线倒置
   out=$("$SCRIPT_DIR/bootstrap_android.sh" $INSTALL_FLAGS ${args[@]+"${args[@]}"}) || rc=$?
   printf '%s\n' "$out"
   if [ "$rc" -ne 0 ]; then
