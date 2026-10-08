@@ -26,7 +26,7 @@ load_config() {
 log()  { printf '==> %s\n' "$*"; }
 warn() { printf '警告: %s\n' "$*" >&2; }
 # die <msg> [exit_code]：打印错误并以指定退出码（默认 1）结束。
-die()  { printf '错误: %s\n' "$*" >&2; exit "${2:-1}"; }
+die()  { printf '错误: %s\n' "$1" >&2; exit "${2:-1}"; }
 
 # 依赖检查：逐项打印安装指引，全部缺失项列出后统一退出（exit 4）。
 # 用法: require_tools "adb:Android SDK platform-tools" "jq:brew install jq" ...
