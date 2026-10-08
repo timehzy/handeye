@@ -34,19 +34,23 @@ handeye/
 ├── device-kmp/          # 【KMP】EventRecorder / CommandRegistry / StateProvider / 7 端点
 ├── device-android/      # 【Android 原生】AAR 入口，转发 device-kmp android 变体
 ├── device-ios/          # 【iOS 原生·二期】Swift 接口签名草案 + 协议映射文档
-├── demo-android/        # 信息流 demo App + 6 个 e2e scenario + 真机跑批脚本
-└── conformance/         # 协议一致性：schema 校验 + golden 对拍 CLI
+├── demo-android/        # 信息流 demo App + 6 个 e2e scenario + 薄封装跑批入口
+├── conformance/         # 协议一致性：schema 校验 + golden 对拍 CLI
+└── scripts/             # 【新增】runner 侧脚手架：build / setup / bootstrap / run 总控
 ```
 
 ## Quickstart：跑 demo（Android 真机）
 
 ```bash
-# 1. 构建并安装 demo App，反查 debug server 端口，跑全部 6 个 scenario
-./demo-android/scripts/run_demo_e2e.sh
+# 1. 构建并安装 demo App，建 adb forward，跑全部 6 个 scenario
+./scripts/run.sh --all
 
 # 2. 或手动：装包后单跑一个场景
 ./gradlew :demo-android:e2e:run --args="refresh_shows_latest_feed http://localhost:<port>"
 ```
+
+> 接入者：从 `scripts/handeye.example.sh` 复制一份 `scripts/handeye.local.sh` 开始
+> （已 gitignore），按你的工程改默认值即可；demo 的出厂配置就是这份 example。
 
 6 个场景覆盖：刷新成功三源一致 / 失败保缓存 / 重复刷新 / 点赞持久化 /
 重建恢复 / 冷启动零网络走持久化。
