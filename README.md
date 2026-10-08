@@ -85,6 +85,13 @@ handeyeTest(name = "...", ctx = myContext(baseUrl)) {
 }
 ```
 
+runner 侧脚手架（构建 / 装包 / 隧道 / 进态注入）按你的工程适配：
+复制 `scripts/handeye.example.sh` 为 `scripts/handeye.local.sh` 并改默认值
+（该文件已 gitignore，可放心放本机路径与设备号），然后跑
+`./scripts/run.sh --check-integration` 诊断集成态。双端逐项接入点
+（依赖 / 装配 / 进态 / 构建 / iOS 三条路线 / 生命周期钩子）见
+[docs/integration-points.md](docs/integration-points.md)。
+
 ## 协议 conformance
 
 ```bash
