@@ -9,7 +9,9 @@
 #   --media-path <path>   沙盒内相对段素材（如 e2e_media/xxx.mp4，脚本拼 files/ 根）。多素材重复该
 #                         参数（或单值内以 `|` 分隔）；紧随其后的 --media-host 归到最近一次
 #                         --media-path 开启的素材；push 落地委派 fetch_media.sh（两级兜底）
-#   --media-host <path>   素材 Mac 本地绝对路径（push 源），归属最近一次 --media-path 的素材
+#   --media-host <path>   素材 Mac 本地绝对路径（push 源），归属最近一次 --media-path 的素材。
+#                         注意 `--media-path 'a|b'` 一次开启多个素材时 --media-host 只归其中
+#                         最后一个素材——每个素材各带 host 须重复 --media-path 分别成组传入
 #   --skip-build          跳过 gradle 构建（委托 build_install_android.sh）
 #   --skip-install        跳过 adb install（委托 build_install_android.sh）
 #   --no-relaunch         跳过冷启动（App 已在主页面时快速接入）
@@ -42,6 +44,8 @@
 #   6  deeplink 注入失败（3 次重试后 /source?name=bootstrap 仍非 null）
 #   7  冷启动失败或秒崩（am start 失败 / 20s 内进程未出现）
 #   8  进态超时（30s 内 Track A/B 均未通过）
+#   9  gradle build 失败（build_install_android.sh 的 5 转译，避免与本脚本 5 相撞）
+#   10 adb install 失败（build_install_android.sh 的 6 转译，避免与本脚本 6 相撞）
 #
 # 实现要点（对上游 bootstrap 结构的取舍）:
 #   - 端口隧道单一真相源在本脚本：冷启动后先自行 discover_debug_server_port（_common.sh）
@@ -203,12 +207,21 @@ resolve_media() {
 # ---- 构建 + 安装 ----
 # 单一真相源在 build_install_android.sh（含新鲜度判定）；本脚本只透传开关。
 # FORCE_REINSTALL 经环境变量天然透传，无需额外处理。
+# 退出码转译：对方的 5（gradle build）/ 6（adb install）与本脚本自身的 5（素材 push）/
+# 6（deeplink 注入）相撞，run.sh 会按本脚本契约表误报——捕获后转译 5→9、6→10
+# （对齐 iOS 侧 9/10 透传约定）。
 build_and_install() {
-  local args=()
+  local args=() rc=0
   [ -n "$SKIP_BUILD" ] && args+=("--skip-build")
   [ -n "$SKIP_INSTALL" ] && args+=("--skip-install")
   log "build_install_android.sh ${args[*]:-（freshness 自判）}"
-  "$SCRIPT_DIR/build_install_android.sh" ${args[@]+"${args[@]}"}
+  "$SCRIPT_DIR/build_install_android.sh" ${args[@]+"${args[@]}"} || rc=$?
+  case "$rc" in
+    0) : ;;
+    5) die "gradle build 失败（build_install_android.sh rc 5，转译 exit 9）" 9 ;;
+    6) die "adb install 失败（build_install_android.sh rc 6，转译 exit 10）" 10 ;;
+    *) die "build_install_android.sh 未预期退出码 $rc" "$rc" ;;
+  esac
 }
 
 # ---- 冷启动 ----
@@ -411,5 +424,57 @@ main() {
   run_hook post-bootstrap
   emit_result
 }
+
+# ---- 自检（隐藏入口，供无设备环境验证退出码转译） ----
+# HANDEYE_SELFTEST=1 ./bootstrap_android.sh —— stub build_install_android.sh：
+# 断言 build_and_install 把对方的 5/6 转译为 9/10（防与本脚本自身的 5（素材 push）/
+# 6（deeplink 注入）契约相撞，run.sh 按契约表误报），0 原样通过，其它码原样透出。
+selftest() {
+  local stub_dir old_script_dir rc
+  stub_dir=$(mktemp -d)
+  cat > "$stub_dir/build_install_android.sh" <<'STUB'
+#!/bin/sh
+exit "${STUB_RC:-0}"
+STUB
+  chmod +x "$stub_dir/build_install_android.sh"
+  old_script_dir=$SCRIPT_DIR
+  SCRIPT_DIR="$stub_dir"
+  SKIP_BUILD=""
+  SKIP_INSTALL=""
+
+  export STUB_RC=0
+  rc=0
+  ( build_and_install >/dev/null 2>&1 ) || rc=$?
+  [ "$rc" -eq 0 ] \
+    || { echo "SELFTEST FAIL: rc0 应透传 0，实际 $rc" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1; }
+
+  export STUB_RC=5
+  rc=0
+  ( build_and_install >/dev/null 2>&1 ) || rc=$?
+  [ "$rc" -eq 9 ] \
+    || { echo "SELFTEST FAIL: rc5 应转译 9，实际 $rc" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1; }
+
+  export STUB_RC=6
+  rc=0
+  ( build_and_install >/dev/null 2>&1 ) || rc=$?
+  [ "$rc" -eq 10 ] \
+    || { echo "SELFTEST FAIL: rc6 应转译 10，实际 $rc" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1; }
+
+  export STUB_RC=4
+  rc=0
+  ( build_and_install >/dev/null 2>&1 ) || rc=$?
+  [ "$rc" -eq 4 ] \
+    || { echo "SELFTEST FAIL: 其它码应原样透出 4，实际 $rc" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1; }
+
+  SCRIPT_DIR=$old_script_dir
+  rm -rf "$stub_dir"
+  echo "SELFTEST OK"
+  return 0
+}
+
+if [ "${HANDEYE_SELFTEST:-}" = "1" ]; then
+  selftest
+  exit $?
+fi
 
 main "$@"
