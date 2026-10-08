@@ -226,6 +226,7 @@ print_effective_config() {
 
 # 在 $ANDROID_HOME/build-tools（未设则回退常见 SDK 安装路径）下探测 aapt：
 # 候选目录按版本号排序（sort -V），取首个含可执行 aapt 的。
+# 已知限制：路径含空格的 SDK 安装位置探测不到（for 循环按空白分词），需用 ANDROID_HOME 无空格路径或软链规避。
 find_aapt() {
   local d best=""
   for d in $( { [ -n "${ANDROID_HOME:-}" ] && ls -d "$ANDROID_HOME/build-tools"/*; \
@@ -661,6 +662,7 @@ group_pause() { # $1 = 组号, $2 = 组数, $3 = 组描述
 # ---- [3/3] 跑一组场景 ----
 # 输出落盘 $ART_DIR/run.log 同时 tee stdout。坑 5 对策：管道吃 exit code，用
 # PIPESTATUS 拿 gradle 真实退出码（bash 3.2 支持）；[PASS]/[FAIL] 行另用于汇总表。
+# 已知限制：gradle 子进程 stdout/stderr 合流后经 tee 回放，两端都指向终端时交错顺序可能乱序（内容不丢）。
 
 ART_DIR=""
 LOG_FILE=""
