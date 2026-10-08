@@ -21,9 +21,16 @@
 #   IOS_PROJECT_DIR   iOS 接入工程目录（含 xcodeproj/workspace 与 Podfile）
 #   IOS_SCHEME        xcodebuild -scheme（默认 handeye-demo）
 #   IOS_WORKSPACE     非空用 -workspace，否则自动探测 *.xcodeproj
+#   IOS_DERIVED_DATA  固定 DerivedData 目录（默认 $HANDEYE_ROOT/build/derived-data/ios）
+#
+# 前置（硬检查，缺失 exit 4 并逐项给安装指引）:
+#   xcodebuild（--skip-build 时不查）· devicectl · 真机 udid
+#   jq 是惰性依赖：仅 fixtures 解析 udid 分支需要；缺失不导致 exit 4，该分支自动跳过
+#   （用 -u / HANDEYE_UDID / idevice_id 仍可解析到设备）
 #
 # 输出契约（供 run.sh 消费，解析 stdout 里的 KEY=VALUE 行）:
-#   HANDEYE_APP_PATH=<.app 路径>   build 成功（或 --skip-build 复用已有）后 emit
+#   HANDEYE_APP_PATH=<.app 路径>   build 成功（emit 在 post-build 钩子之后）
+#                                  或 --skip-build 复用已有后 emit
 #
 # 软前置（不阻断）:
 #   构建成功后探测工程目录的 Podfile：含 :path 本地 pod 打 info；否则打 warn
@@ -32,7 +39,7 @@
 # 退出码:
 #   0  成功（build+install 完成 / 单边跳过完成 / 双 skip 直接返回）
 #   2  参数错误
-#   4  前置缺失：依赖工具（xcodebuild / devicectl / jq）、iOS 工程目录未落地
+#   4  前置缺失：依赖工具（xcodebuild / devicectl）、iOS 工程目录未落地
 #      （device-ios 二期）、无 *.xcodeproj/workspace、无可用真机 udid
 #   9  xcodebuild 失败，或 build/skip-build 后 DerivedData 里找不到 .app 产物
 #   10 devicectl install 失败
@@ -46,8 +53,7 @@ SKIP_INSTALL=""
 UDID=""
 APP_PATH=""
 PROJECT_DIR_ABS=""
-# 固定 DerivedData 目录，便于定位/复用产物（可用环境变量 IOS_DERIVED_DATA 覆写）
-DERIVED_DATA="${IOS_DERIVED_DATA:-$HANDEYE_ROOT/build/derived-data/ios}"
+DERIVED_DATA=""
 
 # ---- 参数解析 ----
 
@@ -131,9 +137,14 @@ project_args() {
     echo "-workspace $ws"
     return 0
   fi
-  local proj
-  proj=$(ls -d "$PROJECT_DIR_ABS"/*.xcodeproj 2>/dev/null | head -1)
-  [ -n "$proj" ] || die "$PROJECT_DIR_ABS 下没有 *.xcodeproj（IOS_WORKSPACE 为空时按 -project 构建，需要 xcodeproj；或配 IOS_WORKSPACE）" 4
+  local projs count proj
+  projs=$(ls -d "$PROJECT_DIR_ABS"/*.xcodeproj 2>/dev/null)
+  [ -n "$projs" ] || die "$PROJECT_DIR_ABS 下没有 *.xcodeproj（IOS_WORKSPACE 为空时按 -project 构建，需要 xcodeproj；或配 IOS_WORKSPACE）" 4
+  count=$(printf '%s\n' "$projs" | awk 'NF {n++} END {print n+0}')
+  proj=$(printf '%s\n' "$projs" | head -1)
+  if [ "$count" -gt 1 ]; then
+    warn "探测到 $count 个 *.xcodeproj 且未配 IOS_WORKSPACE，使用第一个：$proj——多工程目录请显式配 IOS_WORKSPACE 以免选错"
+  fi
   echo "-project $proj"
 }
 
@@ -149,9 +160,19 @@ destination() {
 }
 
 # $1=模式：build（xcodebuild 构建后定位产物）/ reuse（--skip-build 复用已有产物），失败 exit 9。
-# 副作用：成功后向 stdout emit 契约行 HANDEYE_APP_PATH=<path>（供 run.sh 消费）。
+# 只负责定位并把路径写入 APP_PATH；契约行 HANDEYE_APP_PATH 由 emit_app_path 在
+# post-build 钩子之后输出（对齐 Android 兄弟脚本：钩子失败不应已 emit 契约）。
+# 多个候选 .app 时按 mtime 最新优先（对齐 Android 的 ls -t 语义，避免复用到陈旧产物）：
+# BSD stat 优先（macOS）、GNU stat 兜底（Linux）；'%m 路径' 只剥第一个空格，路径含空格安全。
 locate_app() {
-  APP_PATH=$(find "$DERIVED_DATA" -name "*.app" -path "*Debug*" 2>/dev/null | head -1)
+  local newest
+  newest=$(find "$DERIVED_DATA" -name "*.app" -path "*Debug*" -exec stat -f '%m %N' {} + 2>/dev/null \
+    | sort -rn | head -1)
+  if [ -z "$newest" ]; then
+    newest=$(find "$DERIVED_DATA" -name "*.app" -path "*Debug*" -exec stat -c '%Y %n' {} + 2>/dev/null \
+      | sort -rn | head -1)
+  fi
+  APP_PATH="${newest#* }"
   if [ -z "$APP_PATH" ]; then
     if [ "$1" = "reuse" ]; then
       printf '错误: --skip-build 但 DerivedData 里没有已有 .app：%s（-name "*.app" -path "*Debug*"）\n' "$DERIVED_DATA" >&2
@@ -162,6 +183,9 @@ locate_app() {
     exit 9
   fi
   log "APP: $APP_PATH"
+}
+
+emit_app_path() {
   echo "HANDEYE_APP_PATH=$APP_PATH"
 }
 
@@ -170,17 +194,18 @@ build_app() {
   local pargs dest
   pargs=$(project_args)
   dest=$(destination)
-  log "[build] cd $PROJECT_DIR_ABS && xcodebuild $pargs -scheme $IOS_SCHEME -configuration Debug -destination $dest -derivedDataPath $DERIVED_DATA build"
+  log "[build] cd $PROJECT_DIR_ABS && xcodebuild $pargs -scheme $IOS_SCHEME -configuration Debug -destination $dest -derivedDataPath $DERIVED_DATA -allowProvisioningUpdates build"
   if ! ( cd "$PROJECT_DIR_ABS" && xcodebuild $pargs \
       -scheme "$IOS_SCHEME" \
       -configuration Debug \
       -destination "$dest" \
       -derivedDataPath "$DERIVED_DATA" \
+      -allowProvisioningUpdates \
       build ); then
     printf '错误: xcodebuild build 失败\n' >&2
-    printf '  常见原因：签名/Provisioning 未配置真机 · 依赖未同步 · scheme 名与工程不符\n' >&2
-    printf '  重跑看完整日志: cd %s && xcodebuild %s -scheme %s -configuration Debug -destination %s build\n' \
-      "$PROJECT_DIR_ABS" "$pargs" "$IOS_SCHEME" "$dest" >&2
+    printf '  常见原因：签名/Provisioning 未配置真机 · Provisioning Profile 过期或未含当前真机 udid · 依赖未同步 · scheme 名与工程不符\n' >&2
+    printf '  重跑看完整日志: cd %s && xcodebuild %s -scheme %s -configuration Debug -destination %s -derivedDataPath %s -allowProvisioningUpdates build\n' \
+      "$PROJECT_DIR_ABS" "$pargs" "$IOS_SCHEME" "$dest" "$DERIVED_DATA" >&2
     exit 9
   fi
   locate_app "build"
@@ -202,7 +227,8 @@ print_integration_hint() {
   local podfile="$PROJECT_DIR_ABS/Podfile"
   log "集成态检查（软前置，不阻断）"
   if [ -f "$podfile" ]; then
-    if grep -q ':path' "$podfile"; then
+    # 先滤注释行再判 :path：注释里的 :path 字样（如指引样例）不算数
+    if grep -v '^[[:space:]]*#' "$podfile" | grep -q ':path'; then
       log "Podfile 含 :path 本地 pod（源码联调态常见形态），确认 debug 能力已打进包"
     else
       warn "Podfile 未含 :path 本地 pod——若经 KMP/本地 framework 联调，注入样例见 docs/integration-points.md"
@@ -222,6 +248,10 @@ main() {
 
   # 配置加载放在 -h / 双 skip 短路之后：打帮助和双 skip 不需要任何配置
   load_config
+
+  # 固定 DerivedData 目录，便于定位/复用产物（走三级配置：环境变量 > local.sh > 默认值；
+  # 解析放在 load_config 之后，local.sh 里的 IOS_DERIVED_DATA 才能生效）
+  DERIVED_DATA="${IOS_DERIVED_DATA:-$HANDEYE_ROOT/build/derived-data/ios}"
 
   # xcodebuild / devicectl 属可自动检测的工具链，保持硬检查（§5.1）
   if [ -z "$SKIP_BUILD" ]; then
@@ -248,9 +278,11 @@ main() {
     run_hook pre-build
     build_app
     run_hook post-build
+    emit_app_path
     print_integration_hint
   elif [ -z "$SKIP_INSTALL" ]; then
     locate_app "reuse"
+    emit_app_path
   fi
 
   if [ -z "$SKIP_INSTALL" ]; then
