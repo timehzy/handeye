@@ -1,25 +1,37 @@
 #!/usr/bin/env bash
-# handeye e2e 总控入口（v1 · Android 全链路）
+# handeye e2e 总控入口（Android 全链路 + iOS 链路）
 #
 # 流程：拉 bootstrap plan（scenario → page/source）→ 按 (page,source) 稳定分组 →
-#       逐组 bootstrap（委托 bootstrap_android.sh：build/install + 冷启动 + deeplink 进态 +
-#       建隧道，输出 HANDEYE_HOST_PORT 契约行）→ setup 复用 bootstrap 的隧道（/health 兜底重探）→
-#       分组跑 orchestrator → 汇总表收尾。
+#       逐组 bootstrap（Android 委托 bootstrap_android.sh：build/install + 冷启动 + deeplink
+#       进态 + 建 adb forward，输出 HANDEYE_HOST_PORT 契约行；iOS 委托 bootstrap_ios.sh：
+#       build/install + 素材 push + 写配置注入 + 冷启动重拉 + 后台 setup_ios 建 iproxy
+#       隧道，同样输出契约行，并留下持隧道的后台 setup_ios pid）→
+#       setup 复用 bootstrap 的隧道（/health 兜底重探）→ 分组跑 orchestrator → 汇总表收尾。
 #
 # 用法:
-#   ./run.sh --scenario <name> [--platform android] [--serial <s>] [--host-port <p>] [--force-reinstall] [-i] [--tail-events]
+#   ./run.sh --scenario <name> [--platform android] [--ios] [--serial <s>] [--udid <u>] [--host-port <p>] [--force-reinstall] [-i] [--tail-events]
 #   ./run.sh --tag <tag> / --all  [同上]
-#   ./run.sh --check-integration [--platform android]
+#   ./run.sh --check-integration [--platform android|ios]
 #   ./run.sh snapshot diff <a.json> <b.json>     # 纯 host 侧，不需要设备
 #
 # 参数:
 #   --scenario <name>    场景名（与 --tag / --all 三选一）
 #   --tag <tag>          场景标签（与 --scenario / --all 三选一）
 #   --all                跑注册表全部场景，顺序同注册顺序
-#   --platform <p>       平台（默认 android）。v1 仅 android；ios 落地后放开
-#   --serial <s>         目标设备序列号（多机时指定；缺省 $ANDROID_SERIAL 或 adb devices 第一台）
-#   --host-port <port>   host 侧端口。已给则跳过建隧道，直接对该端口 probe /health（隧道归你管）
-#   --force-reinstall    跳过 APK 新鲜度判定，强制 build + install
+#   --platform <p>       平台（默认 android）。android | ios
+#   --ios                整轮跑 iOS 链路，等价 --platform ios（与 --platform android 互斥）。
+#                        device-pending：demo-ios 未落地，真机 iOS 暂跑不了，脚本已就绪，
+#                        验证全靠 mock（stub bootstrap_ios.sh）
+#   --serial <s>         Android 目标设备序列号（多机时指定；缺省 $ANDROID_SERIAL 或 adb devices 第一台）
+#   --udid <u>           iOS 目标设备 udid（多机时指定；缺省 $HANDEYE_UDID / fixtures
+#                        .devices.ios_udid / idevice_id -l 第一台，透传 bootstrap_ios.sh）
+#   --host-port <port>   host 侧端口。已给则跳过建隧道，直接对该端口 probe /health（隧道归你管）。
+#                        iOS 下语义：你的 iproxy 隧道已在该端口监听 → 以 --skip-forward 调
+#                        bootstrap_ios.sh（只注入不建隧道、不做进态判定），跑批探你的端口；
+#                        未给时 bootstrap_ios 自建隧道（内部后台 setup_ios 驻留），run.sh 解析
+#                        其契约行并把后台 setup_ios pid 记入清理表，cleanup 时杀并等回收——
+#                        你 --host-port 带入的隧道进程绝不在清理表内
+#   --force-reinstall    跳过 APK/App 新鲜度判定，强制 build + install
 #   -i, --interactive    交互模式：每组开始前停下等回车，'q' 主动退出（exit 0）
 #                        （注意：是 run.sh 组级断点，不透传给 orchestrator 的场景级 --interactive；
 #                        有控制终端时从 /dev/tty 读键——gradle run task 的 standardInput
@@ -39,17 +51,26 @@
 # 分组 bootstrap（结构对齐上游 e2e.sh [2/3] 段）:
 #   每组 bootstrap 状态三个全局量：LAST_BOOTSTRAP_KEY（本 run 内最近一次成功 bootstrap 的
 #   page<TAB>source，同 key 直接跳过）、FRESHNESS_JUDGED / INSTALL_FLAGS（新鲜度只判定一次、
-#   结论复用——实际判定在 build_install_android.sh 内部完成，首组传空 flags 让其内判，
+#   结论复用——实际判定在 build_install_* 脚本内部完成，首组传空 flags 让其内判，
 #   成功后置 "--skip-build --skip-install"，后续组只重启不重装）。
-#   page=demo：bootstrap 整体委托 bootstrap_android.sh（N2 已落地，替代 v1 内联
-#   build+am-start fast-path）——build/install、冷启动、deeplink 进态、建隧道都归它；
-#   组素材 source 列（设备沙盒相对段，多素材 | 连接与其 split_pipe 语义一致，plan 反查
-#   已保证相对段合法）以 --media-path 透传，host_path 列（host 侧绝对路径，只作 push 源）
-#   以 --media-host 透传；设备已有素材即跳过 push，缺素材时 bootstrap 委派 fetch_media.sh
-#   两级兜底（设备已有 → host 本地）自动拉取，失败以 exit 5 清晰早报，不影响其它组。
+#   page=demo：Android 整体委托 bootstrap_android.sh（build/install、冷启动、deeplink 进态、
+#   建隧道都归它）；iOS 整体委托 bootstrap_ios.sh（build/install、素材 push、写配置注入、
+#   冷启动重拉、后台 setup_ios 建隧道都归它）——run.sh 只传开关、解析契约行、维护
+#   INSTALL_FLAGS 复用态。组素材 source 列（设备沙盒相对段，多素材 | 连接与其 split_pipe
+#   语义一致，plan 反查已保证相对段合法）以 --media-path 透传，host_path 列（host 侧绝对
+#   路径，只作 push 源）以 --media-host 透传；Android 缺素材时 bootstrap 委派 fetch_media.sh
+#   两级兜底自动拉取，iOS 侧 push 由 bootstrap_ios 走 afcclient 完成（不经 fetch_media.sh），
+#   失败都以 exit 5 清晰早报，不影响其它组。
+#   iOS 隧道语义差异：Android 的 adb forward 是持久内核态映射，iOS 隧道是 iproxy 进程、
+#   必须由活进程持有——bootstrap_ios 后台拉起 setup_ios 驻留持隧道并在 stdout 报文里给出
+#   pid；run.sh 解析该 pid 记入 IOS_TUNNEL_PIDS，cleanup 统一杀并等回收。run.sh 不独立调
+#   setup_ios（其契约行输出后驻留阻塞，无法同步捕获；隧道建置内聚在 bootstrap_ios 的
+#   ensure_tunnel 里，等价 Android 的「bootstrap 含建隧道」语义）。
 #
 # 前置:
-#   - Android device 已连接（adb devices 可见），debug 变体 App 可启动
+#   - Android: device 已连接（adb devices 可见），debug 变体 App 可启动
+#   - iOS: 真机 USB 连接（idevice_id -l 可见），libimobiledevice + Xcode 已装
+#     （bootstrap_ios.sh 自检，缺时 exit 4 早报）
 #   - JDK 17（缺时 macOS: /usr/libexec/java_home -v 17 查看已装版本；或 brew install openjdk@17）
 #
 # 退出码:
@@ -91,7 +112,10 @@ SCENARIO=""
 TAG=""
 ALL=0
 PLATFORM="android"
+PLATFORM_EXPLICIT=""  # --platform 显式给的值（未给为空；--ios 与 --platform android 冲突检测用）
+IOS_FLAG=0            # --ios 是否给过（同上）
 SERIAL=""
+UDID=""
 USER_HOST_PORT=""
 INTERACTIVE=0
 TAIL_EVENTS=0
@@ -105,8 +129,10 @@ parse_args() {
       --scenario)  [ -n "${2:-}" ] || die "参数 --scenario 缺少值" 2; SCENARIO="$2"; shift 2 ;;
       --tag)       [ -n "${2:-}" ] || die "参数 --tag 缺少值" 2; TAG="$2"; shift 2 ;;
       --all)       ALL=1; shift 1 ;;
-      --platform)  [ -n "${2:-}" ] || die "参数 --platform 缺少值" 2; PLATFORM="$2"; shift 2 ;;
+      --platform)  [ -n "${2:-}" ] || die "参数 --platform 缺少值" 2; PLATFORM="$2"; PLATFORM_EXPLICIT="$2"; shift 2 ;;
+      --ios)       IOS_FLAG=1; PLATFORM="ios"; shift 1 ;;
       --serial)    [ -n "${2:-}" ] || die "参数 --serial 缺少值" 2; SERIAL="$2"; shift 2 ;;
+      --udid)      [ -n "${2:-}" ] || die "参数 --udid 缺少值" 2; UDID="$2"; shift 2 ;;
       --host-port) [ -n "${2:-}" ] || die "参数 --host-port 缺少值" 2; USER_HOST_PORT="$2"; shift 2 ;;
       --check-integration) CHECK_INTEGRATION=1; shift 1 ;;
       --force-reinstall) FORCE_REINSTALL=1; shift 1 ;;
@@ -131,6 +157,10 @@ parse_args() {
     printf '错误: --scenario / --tag / --all / --check-integration 至少给一个\n' >&2
     usage_from_header "$0" >&2
     exit 2
+  fi
+  if [ "$IOS_FLAG" -eq 1 ] && [ -n "$PLATFORM_EXPLICIT" ] && [ "$PLATFORM_EXPLICIT" != "ios" ]; then
+    # 只有 --platform android + --ios 这种真冲突才报；--platform ios + --ios 同义冗余，放行
+    die "--ios 与 --platform $PLATFORM_EXPLICIT 冲突（iOS 链路用 --ios 或 --platform ios 其一即可）" 2
   fi
   if [ "$PLATFORM" != "android" ] && [ "$PLATFORM" != "ios" ]; then
     die "--platform 只支持 android 或 ios（收到: $PLATFORM）" 2
@@ -157,8 +187,10 @@ check_jdk() {
 }
 
 preflight() {
+  # 公共工具链：curl/jq（plan 拉取与 catalog 解析）+ java（gradle）。adb 与 Android
+  # 设备选择只属 Android 链路；iOS 链路工具（idevice_id/afcclient/devicectl/iproxy）
+  # 由 bootstrap_ios.sh 自检（exit 4 早报），run.sh 不重复检查
   require_tools \
-    "adb:Android SDK platform-tools" \
     "curl:macOS 自带" \
     "jq:brew install jq" \
     "java:JDK 17 — macOS 查看已装: /usr/libexec/java_home -v 17；安装: brew install openjdk@17"
@@ -170,10 +202,17 @@ preflight() {
   # 环境变量（BootstrapPlanCli.defaultCatalogJson），FIXTURES_JSON 已被 load_config
   # 归一为绝对路径——plan 拉取与场景跑批的 gradle 调用都靠这次 export 带上 catalog
   export HANDEYE_FIXTURES_JSON="$FIXTURES_JSON"
-  resolve_device "$SERIAL"
-  # 与 _common.sh 约定一致：$ADB 故意不加引号，分词成 "adb -s <serial>"
-  export ANDROID_SERIAL="$SERIAL"
-  # --force-reinstall → 环境变量透传给 build_install_android.sh（其内部 freshness 判定消费）
+  if [ "$PLATFORM" = "android" ]; then
+    require_tools "adb:Android SDK platform-tools"
+    resolve_device "$SERIAL"
+    # 与 _common.sh 约定一致：$ADB 故意不加引号，分词成 "adb -s <serial>"
+    export ANDROID_SERIAL="$SERIAL"
+  else
+    # iOS：不解析 adb 设备；udid 缺省时由 bootstrap_ios.sh 按
+    # $HANDEYE_UDID / fixtures .devices.ios_udid / idevice_id -l 链自行解析
+    [ -n "$SERIAL" ] && warn "--serial 只用于 Android 链路，iOS 已忽略（用 --udid 指定 iOS 设备）"
+  fi
+  # --force-reinstall → 环境变量透传给 build_install_*（其内部 freshness 判定消费）
   if [ "$FORCE_REINSTALL" -eq 1 ]; then
     export FORCE_REINSTALL=1
   fi
@@ -550,8 +589,123 @@ ensure_bootstrap_demo() { # $1 = source（plan source 列：设备沙盒相对�
   return 0
 }
 
-# page 分发。v1 仅 demo 页落地：plan 过滤只放行 demo 行，未知页进不了组；
-# 此处 * 分支仅防御绕过过滤的直调（如单测手工构造 plan）。
+# ---- iOS 分组 bootstrap（--ios / --platform ios 链路） ----
+# 与 ensure_bootstrap_demo 对称：整体委托 bootstrap_ios.sh（build/install + 素材 push +
+# 写配置注入 + 冷启动重拉 + 内部 ensure_tunnel 后台 setup_ios 建 iproxy 隧道），
+# run.sh 只传开关、解析契约行、登记后台 setup_ios pid、维护 INSTALL_FLAGS 复用态。
+# 与 Android 的三点语义差异：
+#   1. iOS 隧道是 iproxy 进程须活进程持有——bootstrap 留下后台 setup_ios，pid 来自其
+#      stdout 报文（「隧道由后台 setup_ios.sh（pid N）驻留持有」行），记入 IOS_TUNNEL_PIDS
+#      供 cleanup 杀并等回收；run.sh 不独立调 setup_ios（其契约行后驻留阻塞，无法同步捕获）。
+#   2. --host-port 语义 = 用户 iproxy 隧道归你管：以 --skip-forward 调 bootstrap_ios
+#      （不建隧道、不做进态判定），不要求契约行，跑批探用户端口。
+#   3. 设备参数是 -u udid 而非 -s serial（多机时缺省由 bootstrap_ios 自行解析）。
+
+# iOS rc → 提示映射（bootstrap_ios.sh 契约表；独立成表，不复用 Android 语义——
+# 同码不同义：iOS 6=写配置失败（Android 6=deeplink 注入失败）、iOS 9/10 透传
+# build_install_ios（Android 9/10 是 gradle/adb install）；setup_ios 的 1=前置缺失 /
+# 4=/health 未就绪经 bootstrap 内部 ensure_tunnel 归并为这里的 3 / 4，run.sh 不直接消费）
+bootstrap_ios_rc_hint() { # $1 = rc
+  case "$1" in
+    2) warn "参数错误（未知参数 / 素材相对段非法 / --media-host 出现在 --media-path 之前）" ;;
+    3) warn "setup_ios.sh 阶段失败（隧道未建立 / 契约行缺失 / 进程中途退出；iproxy 前置缺失与 /health 未就绪也归并到此）" ;;
+    4) warn "前置缺失（idevice_id / afcclient / devicectl / iproxy / curl 未装 / 配置缺失 / 无真机 udid）" ;;
+    5) warn "素材 push 失败（afcclient push 失败 / 设备无素材且未给 --media-host）" ;;
+    6) warn "写配置失败（afcclient 推 handeye_bootstrap.json 失败；iOS 侧进态注入等价物，语义不同于 Android 同码 6）" ;;
+    7) warn "冷启动重拉失败（devicectl launch 失败 / --no-relaunch 但进程不在）" ;;
+    8) warn "进态超时（/source?name=bootstrap 一直为 null；排查指引见上方 bootstrap_ios.sh 输出）" ;;
+    9) warn "xcodebuild 失败（构建链路，见上方 build_install_ios.sh 输出）" ;;
+    10) warn "devicectl install 失败（设备连接 / 安装被拒，见上方 build_install_ios.sh 输出）" ;;
+    *) warn "未预期的退出码（见 bootstrap_ios.sh 头部退出码表）" ;;
+  esac
+}
+
+ensure_bootstrap_ios() { # $1 = source（plan source 列：设备沙盒相对段，多素材 | 连接，可空）
+                         # $2 = host_path（plan host_path 列：host 侧素材绝对路径，可空）
+  local source="$1" host_path="${2:-}"
+  local args=() out rc=0 hp setup_pid
+
+  # 新鲜度复用态与 Android 共用同一组全局量（首组内判、后续组 --skip-build --skip-install）
+  if [ "$FRESHNESS_JUDGED" -eq 0 ]; then
+    FRESHNESS_JUDGED=1
+    INSTALL_FLAGS=""
+  fi
+
+  # 组素材透传与 Android 同款语义（iOS 侧 push 由 bootstrap_ios 走 afcclient 完成，
+  # 不经 fetch_media.sh；--media-host 同样只归 | 分隔列的最后一个元素）
+  if [ -n "$source" ]; then
+    args+=("--media-path" "$source")
+    if [ -n "$host_path" ]; then
+      if [ "$(pipe_split_count "$source")" -gt 1 ]; then
+        warn "组含多素材（$(pipe_split_count "$source") 个）但 host 列为单值：--media-host 只覆盖 | 分隔的最后一个元素，其余元素需预置在设备上"
+      fi
+      args+=("--media-host" "$host_path")
+    fi
+  fi
+  # 多机时把选中的 udid 传下去（bootstrap 内部 resolve_udid 同理，双保险）
+  [ -z "$UDID" ] || args+=("-u" "$UDID")
+
+  # --host-port：隧道（iproxy）归用户管 → bootstrap 只注入不进态判定，不要求契约行
+  if [ -n "$USER_HOST_PORT" ]; then
+    args+=("--skip-forward")
+  fi
+
+  log "bootstrap: bootstrap_ios.sh $INSTALL_FLAGS ${args[*]:-}"
+  # $INSTALL_FLAGS 是脚本内构造的受控 token（空 / "--skip-build --skip-install"），需词分割展开
+  # shellcheck disable=SC2086
+  # 已知限制同 Android：stdout 被整体捕获、批末回放，stderr 实时穿透
+  out=$("$SCRIPT_DIR/bootstrap_ios.sh" $INSTALL_FLAGS ${args[@]+"${args[@]}"}) || rc=$?
+  printf '%s\n' "$out"
+  if [ "$rc" -ne 0 ]; then
+    warn "bootstrap_ios.sh 退出码 $rc（page=demo），本组跳过"
+    bootstrap_ios_rc_hint "$rc"
+    return 1
+  fi
+
+  if [ -n "$USER_HOST_PORT" ]; then
+    # --host-port：跑批探用户隧道端口；不动 HOST_PORT/BASE_URL/SETUP_DONE，
+    # 不解析契约行（--skip-forward 下 bootstrap 不输出），不登记任何隧道进程（cleanup 绝不杀用户隧道）
+    log "--host-port 已指定（用户 iproxy 隧道），bootstrap 以 --skip-forward 完成注入，跑批探用户端口 tcp:$USER_HOST_PORT"
+    INSTALL_FLAGS="--skip-build --skip-install"
+    return 0
+  fi
+
+  # 解析契约行 HANDEYE_HOST_PORT（bootstrap 自建隧道时才输出；--skip-forward 走不到这里）。
+  # 契约行被破坏（非数字）是 harness 自身 bug，直接 die（与 Android 分支同款语义）
+  hp=$(printf '%s\n' "$out" | grep -E '^HANDEYE_HOST_PORT=' | tail -1 | sed -E 's/^HANDEYE_HOST_PORT=([0-9]+).*/\1/')
+  case "$hp" in
+    '')
+      warn "bootstrap 输出缺少 HANDEYE_HOST_PORT 契约行（自建隧道成功却未报契约？），无法确定本组 BASE_URL"
+      return 1 ;;
+    *[!0-9]*)
+      die "bootstrap 契约行 HANDEYE_HOST_PORT 非法（'$hp'）——bootstrap_ios.sh 输出契约被破坏" ;;
+  esac
+  HOST_PORT="$hp"
+  BASE_URL="http://127.0.0.1:$HOST_PORT"
+  FORWARD_CREATED=1
+  SETUP_DONE=1
+
+  # 登记后台 setup_ios 持隧道进程（pid 来自 bootstrap 结尾报文行，形如
+  # 「隧道由后台 setup_ios.sh（pid 12345）驻留持有；拆除: kill 12345」）。
+  # iOS 无 adb forward 概念，CREATED_FORWARDS 不适用；登进 IOS_TUNNEL_PIDS 供 cleanup
+  # 统一杀并等回收。解析不到不判组失败（隧道已可用），但 warn 提醒手动清理。
+  setup_pid=$(printf '%s\n' "$out" \
+    | grep -E 'setup_ios\.sh（pid [0-9]+）' | tail -1 \
+    | sed -E 's/.*pid ([0-9]+).*/\1/')
+  case "$setup_pid" in
+    ''|*[!0-9]*)
+      warn "未能从 bootstrap_ios.sh 输出解析后台 setup_ios 的 pid，隧道进程将无法自动清理（可手动: pkill -f setup_ios.sh）" ;;
+    *) record_ios_tunnel_pid "$setup_pid" ;;
+  esac
+
+  # 本 run 已成功 build+install（或确认新鲜）——后续组一律跳过重装
+  INSTALL_FLAGS="--skip-build --skip-install"
+  return 0
+}
+
+# page 分发。仅 demo 页落地：plan 过滤只放行 demo 行，未知页进不了组；
+# 此处 * 分支仅防御绕过过滤的直调（如单测手工构造 plan）。page=demo 按平台分派
+# bootstrap_android.sh / bootstrap_ios.sh。
 ensure_bootstrap() { # $1 = page, $2 = source, $3 = host_path（plan host 列，可空）
   local page="$1" source="$2" host_path="${3:-}"
   local key="$page$TAB$source"
@@ -561,7 +715,12 @@ ensure_bootstrap() { # $1 = page, $2 = source, $3 = host_path（plan host 列，
   fi
   local rc=0
   case "$page" in
-    demo) ensure_bootstrap_demo "$source" "$host_path" || rc=1 ;;
+    demo)
+      if [ "$PLATFORM" = "ios" ]; then
+        ensure_bootstrap_ios "$source" "$host_path" || rc=1
+      else
+        ensure_bootstrap_demo "$source" "$host_path" || rc=1
+      fi ;;
     *)    warn "page=$page 的 bootstrap 未落地（v1 仅 demo 页），本组跳过"; rc=1 ;;
   esac
   [ "$rc" -eq 0 ] && LAST_BOOTSTRAP_KEY="$key"
@@ -574,6 +733,8 @@ ensure_bootstrap() { # $1 = page, $2 = source, $3 = host_path（plan host 列，
 # 多 key 组会各自建/复用 forward（每组端口可能不同，bootstrap 反查阶段还可能在其
 # DEVICE_PORT 上另建 discovery forward）——全部登记进 CREATED_FORWARDS，cleanup 时
 # 逐条摘除，不再逐组残留（原「需手动 adb forward --remove-all」已知限制就此解除）。
+# iOS 不走 do_setup：隧道由每组 bootstrap_ios 内部后台 setup_ios 建置（iproxy 须活进程
+# 持有），pid 登记进 IOS_TUNNEL_PIDS，cleanup 杀并等回收。
 
 SETUP_DONE=0
 BASE_URL=""
@@ -583,6 +744,10 @@ TAIL_PID=""
 # 本 run 建/复用过的 adb forward 登记表，元素为 "serial:hostPort"（serial 可空）。
 # 用户 --host-port 带入的隧道从不进表，cleanup 绝不动（见 ensure_setup_and_health）。
 CREATED_FORWARDS=()
+# iOS 隧道进程登记表：bootstrap_ios 自建隧道时留下的后台 setup_ios pid（来自其 stdout
+# 报文「隧道由后台 setup_ios.sh（pid N）驻留持有」）。只收本链路报出的 pid；
+# 用户 --host-port 带入的隧道进程绝不进表，cleanup 绝不动。
+IOS_TUNNEL_PIDS=()
 
 # 登记一个本脚本链路确认存在过的 forward host 端口（去重）。调用点：do_setup 成功、
 # ensure_bootstrap_demo 解析到契约行（HOST_PORT + DEVICE_PORT，后者覆盖 bootstrap
@@ -595,14 +760,37 @@ record_forward() { # $1 = hostPort
   CREATED_FORWARDS+=("$pair")
 }
 
-# 收尾：停 events tailer + 逐条摘除本 run 登记过的 adb forward。
-# EXIT trap 兜底正常收尾与异常中断；snapshot 子命令 exec 走不到这里（那时也没建过隧道）。
+# 登记一个 bootstrap_ios 报出的后台 setup_ios 持隧道 pid（去重；换组重建隧道会产生新 pid）。
+record_ios_tunnel_pid() { # $1 = pid
+  local e
+  for e in ${IOS_TUNNEL_PIDS[@]+"${IOS_TUNNEL_PIDS[@]}"}; do
+    [ "$e" = "$1" ] && return 0
+  done
+  IOS_TUNNEL_PIDS+=("$1")
+}
+
+# 收尾：停 events tailer + 杀 iOS 后台 setup_ios 隧道进程并等回收 + 逐条摘除本 run
+# 登记过的 adb forward。EXIT trap 兜底正常收尾与异常中断；snapshot 子命令 exec 走不到
+# 这里（那时也没建过隧道）。
 cleanup() {
   if [ -n "${TAIL_PID:-}" ]; then
     kill "$TAIL_PID" 2>/dev/null || true
     TAIL_PID=""
   fi
-  # 无 adb 环境（纯 host 自检 / mock 冒烟）：静默跳过转发清理，不报错
+  # iOS 隧道进程：TERM（setup_ios 的 trap 语义）+ 轮询等回收。这些进程不是本脚本的
+  # 子进程（bootstrap_ios 已退出、它们被 reparent），wait 不可用，只能 kill -0 轮询
+  local pid waited
+  for pid in ${IOS_TUNNEL_PIDS[@]+"${IOS_TUNNEL_PIDS[@]}"}; do
+    printf '\n==> 清理 iOS 隧道: kill 后台 setup_ios 进程 pid:%s\n' "$pid"
+    kill "$pid" 2>/dev/null || true
+    waited=0
+    while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 50 ]; do
+      sleep 0.1
+      waited=$((waited + 1))
+    done
+  done
+  IOS_TUNNEL_PIDS=()
+  # 无 adb 环境（纯 host 自检 / mock 冒烟 / iOS 链路）：静默跳过转发清理，不报错
   command -v adb >/dev/null 2>&1 || return 0
   local entry serial hp
   for entry in ${CREATED_FORWARDS[@]+"${CREATED_FORWARDS[@]}"}; do
@@ -624,6 +812,12 @@ cleanup() {
 trap cleanup EXIT
 
 do_setup() {
+  # iOS 链路没有 Android 的独立 setup 快路径：隧道随每组 bootstrap_ios 建置并登记
+  # 进 IOS_TUNNEL_PIDS；走到这里说明链路状态异常（防御，正常不可达）
+  if [ "$PLATFORM" = "ios" ]; then
+    warn "iOS 链路不重建隧道（隧道由 bootstrap_ios 的 setup_ios 持有，退出请重跑或手动 pkill -f setup_ios.sh）"
+    return 1
+  fi
   local out hp
   log "setup_android.sh（反查 device 端口 + adb forward + /health）"
   # HOST_PORT 非空（上一组解析值）作为 localPort 传入，跨组复用同一 host 端口
@@ -666,6 +860,12 @@ ensure_setup_and_health() {
     return 0
   fi
   if [ "$just_setup" -eq 0 ]; then
+    # iOS：隧道是后台 setup_ios 进程，探不通说明进程可能已退出，无 Android 的
+    # 独立重建快路径（重建 = 重跑 bootstrap），明确报错让调用方判本组 setup 失败
+    if [ "$PLATFORM" = "ios" ]; then
+      warn "/health 未就绪（iOS 隧道进程可能已退出；重跑本脚本或手动重建 iproxy 隧道）"
+      return 1
+    fi
     warn "/health 未就绪，重建 adb forward 后再探（App 可能换端口重启）"
     do_setup || return 1
     if probe_health "$BASE_URL"; then
@@ -803,14 +1003,17 @@ main() {
     exit 0
   fi
 
-  [ "$PLATFORM" = "android" ] || die "--platform $PLATFORM 尚未落地（v1 仅支持 android）" 2
-
   preflight
 
-  # [0/3] 唤醒设备：熄屏/锁屏下冷启动会卡 Splash，幂等无副作用
-  log "[0/3] 唤醒设备"
-  $ADB shell input keyevent KEYCODE_WAKEUP 2>/dev/null || true
-  $ADB shell wm dismiss-keyguard 2>/dev/null || true
+  if [ "$PLATFORM" = "android" ]; then
+    # [0/3] 唤醒设备：熄屏/锁屏下冷启动会卡 Splash，幂等无副作用（Android 专属；
+    # iOS 真机锁屏不拦冷启动，bootstrap_ios 的 devicectl launch 自处理）
+    log "[0/3] 唤醒设备"
+    $ADB shell input keyevent KEYCODE_WAKEUP 2>/dev/null || true
+    $ADB shell wm dismiss-keyguard 2>/dev/null || true
+  else
+    log "[0/3] iOS 链路就绪检查：device-pending（demo-ios 未落地，真机跑批待二期验证），脚本链路已就绪"
+  fi
 
   # [1/3] plan
   fetch_plan
@@ -1074,6 +1277,112 @@ STUB
   FRESHNESS_JUDGED=0; INSTALL_FLAGS=""; LAST_BOOTSTRAP_KEY=""
   SERIAL=""; USER_HOST_PORT=""
   HOST_PORT=""; BASE_URL=""; FORWARD_CREATED=0; SETUP_DONE=0
+
+  # ensure_bootstrap_ios 接线（iOS 链路，stub bootstrap_ios.sh）：验证 ①-u udid 透传
+  # ②契约行解析 → BASE_URL/HOST_PORT/SETUP_DONE ③pid 报文 → IOS_TUNNEL_PIDS 登记
+  # 且 cleanup 杀该 pid 并等回收 ④--host-port → --skip-forward 透传、不解析契约、
+  # 不登记 pid、全局态不污染 ⑤rc 6 → iOS 专属消息（写配置失败，≠ Android deeplink 语义）
+  # 且不污染复用态 ⑥rc 4 → 前置缺失消息 ⑦缺契约行 → 失败（自建隧道成功必须报契约）
+  local ios_stub fake_setup_pid
+  ios_stub=$(mktemp -d)
+  cat > "$ios_stub/bootstrap_ios.sh" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$@" > "$STUB_ARGS_FILE"
+if [ "${STUB_RC:-0}" != "0" ]; then exit "$STUB_RC"; fi
+if [ -z "${STUB_NO_CONTRACT:-}" ]; then
+  echo "HANDEYE_HOST_PORT=41001"
+  echo "HANDEYE_DEVICE_PORT=27778"
+fi
+if [ -z "${STUB_NO_PID:-}" ]; then
+  echo "隧道由后台 setup_ios.sh（pid ${STUB_SETUP_PID:-99999}）驻留持有；拆除: kill ${STUB_SETUP_PID:-99999}"
+fi
+STUB
+  chmod +x "$ios_stub/bootstrap_ios.sh"
+  old_script_dir=$SCRIPT_DIR
+  SCRIPT_DIR="$ios_stub"
+
+  # ①②③ 成功路径：真 sleep 进程充当 bootstrap 留下的后台 setup_ios，验证 pid 登记 +
+  # cleanup TERM 杀掉并等回收（非本脚本子进程无法 wait，靠 kill -0 轮询）
+  sleep 60 & fake_setup_pid=$!
+  export STUB_ARGS_FILE="$ios_stub/args_ios1"; export STUB_RC=0; export STUB_SETUP_PID=$fake_setup_pid
+  unset STUB_NO_CONTRACT STUB_NO_PID || true
+  FRESHNESS_JUDGED=0; INSTALL_FLAGS=""; LAST_BOOTSTRAP_KEY=""
+  PLATFORM="ios"; UDID="TESTUDID"; USER_HOST_PORT=""
+  HOST_PORT=""; BASE_URL=""; FORWARD_CREATED=0; SETUP_DONE=0; IOS_TUNNEL_PIDS=()
+  ensure_bootstrap_ios "e2e_media/a.mp4" >/dev/null \
+    || { echo "SELFTEST FAIL: ensure_bootstrap_ios 成功路径返回非 0" >&2; kill "$fake_setup_pid" 2>/dev/null || true; wait "$fake_setup_pid" 2>/dev/null || true; SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1; }
+  grep -qx -- "-u" "$ios_stub/args_ios1" && grep -qx -- "TESTUDID" "$ios_stub/args_ios1" \
+    || { echo "SELFTEST FAIL: -u udid 透传丢失（$(cat "$ios_stub/args_ios1")）" >&2; kill "$fake_setup_pid" 2>/dev/null || true; wait "$fake_setup_pid" 2>/dev/null || true; SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1; }
+  [ "$BASE_URL" = "http://127.0.0.1:41001" ] && [ "$HOST_PORT" = "41001" ] && [ "$SETUP_DONE" = "1" ] \
+    || { echo "SELFTEST FAIL: iOS 契约行解析/BASE_URL/SETUP_DONE（base=$BASE_URL setup=$SETUP_DONE）" >&2; kill "$fake_setup_pid" 2>/dev/null || true; wait "$fake_setup_pid" 2>/dev/null || true; SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1; }
+  [ "${#IOS_TUNNEL_PIDS[@]}" -eq 1 ] && [ "${IOS_TUNNEL_PIDS[0]}" = "$fake_setup_pid" ] \
+    || { echo "SELFTEST FAIL: setup_ios pid 未登记（${IOS_TUNNEL_PIDS[*]:-<空>} != $fake_setup_pid）" >&2; kill "$fake_setup_pid" 2>/dev/null || true; wait "$fake_setup_pid" 2>/dev/null || true; SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1; }
+  [ "$INSTALL_FLAGS" = "--skip-build --skip-install" ] \
+    || { echo "SELFTEST FAIL: iOS 成功路径 INSTALL_FLAGS 未置复用态（'$INSTALL_FLAGS'）" >&2; kill "$fake_setup_pid" 2>/dev/null || true; wait "$fake_setup_pid" 2>/dev/null || true; SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1; }
+  # cleanup 杀登记的 setup_ios pid 并等回收（TAIL_PID/CREATED_FORWARDS 均为空，输出可丢）
+  cleanup >/dev/null 2>&1 || true
+  if kill -0 "$fake_setup_pid" 2>/dev/null; then
+    echo "SELFTEST FAIL: cleanup 未杀掉登记的 setup_ios pid $fake_setup_pid" >&2
+    kill "$fake_setup_pid" 2>/dev/null || true; wait "$fake_setup_pid" 2>/dev/null || true
+    SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1
+  fi
+  wait "$fake_setup_pid" 2>/dev/null || true
+  [ "${#IOS_TUNNEL_PIDS[@]}" -eq 0 ] \
+    || { echo "SELFTEST FAIL: cleanup 后 IOS_TUNNEL_PIDS 未清空（${IOS_TUNNEL_PIDS[*]}）" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1; }
+
+  # ④ --host-port：--skip-forward 透传；不要求契约行、不登记 pid；用户隧道全局态零污染
+  export STUB_ARGS_FILE="$ios_stub/args_ios2"; export STUB_RC=0; unset STUB_SETUP_PID || true
+  unset STUB_NO_CONTRACT STUB_NO_PID || true
+  FRESHNESS_JUDGED=1; INSTALL_FLAGS=""
+  USER_HOST_PORT="45678"
+  HOST_PORT=""; BASE_URL=""; FORWARD_CREATED=0; SETUP_DONE=0; IOS_TUNNEL_PIDS=()
+  ensure_bootstrap_ios "" >/dev/null \
+    || { echo "SELFTEST FAIL: iOS --host-port 分支成功路径返回非 0" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1; }
+  grep -qx -- "--skip-forward" "$ios_stub/args_ios2" \
+    || { echo "SELFTEST FAIL: iOS --host-port 未透传 --skip-forward（$(cat "$ios_stub/args_ios2")）" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1; }
+  { [ -z "$HOST_PORT" ] && [ -z "$BASE_URL" ] && [ "$FORWARD_CREATED" = "0" ] && [ "$SETUP_DONE" = "0" ]; } \
+    || { echo "SELFTEST FAIL: iOS --host-port 分支污染了用户隧道全局态（host=$HOST_PORT base=$BASE_URL fwd=$FORWARD_CREATED setup=$SETUP_DONE）" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1; }
+  [ "${#IOS_TUNNEL_PIDS[@]}" -eq 0 ] \
+    || { echo "SELFTEST FAIL: iOS --host-port 分支误登记隧道 pid（${IOS_TUNNEL_PIDS[*]}）" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1; }
+  [ "$INSTALL_FLAGS" = "--skip-build --skip-install" ] \
+    || { echo "SELFTEST FAIL: iOS --host-port 分支 INSTALL_FLAGS 未置复用态（'$INSTALL_FLAGS'）" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1; }
+
+  # ⑤⑥ 失败路径消息映射：rc 6 必须是 iOS 语义「写配置失败」（不得出现 Android 的
+  # deeplink 文案）；rc 4 是前置缺失。两条路径都不污染 INSTALL_FLAGS
+  export STUB_ARGS_FILE="$ios_stub/args_ios3"; export STUB_RC=6
+  INSTALL_FLAGS=""
+  if ensure_bootstrap_ios "" >/dev/null 2>"$ios_stub/warn_ios6"; then
+    echo "SELFTEST FAIL: iOS bootstrap rc 6 应返回非 0" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1
+  fi
+  grep -q '写配置失败' "$ios_stub/warn_ios6" \
+    || { echo "SELFTEST FAIL: iOS rc 6 未按写配置失败映射（$(cat "$ios_stub/warn_ios6")）" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1; }
+  if grep -q 'deeplink 注入失败' "$ios_stub/warn_ios6"; then
+    echo "SELFTEST FAIL: iOS rc 6 消息串了 Android deeplink 语义" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1
+  fi
+  [ "$INSTALL_FLAGS" = "" ] \
+    || { echo "SELFTEST FAIL: iOS 失败路径 INSTALL_FLAGS 被污染（'$INSTALL_FLAGS'）" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1; }
+  export STUB_ARGS_FILE="$ios_stub/args_ios4"; export STUB_RC=4
+  INSTALL_FLAGS=""
+  if ensure_bootstrap_ios "" >/dev/null 2>"$ios_stub/warn_ios4"; then
+    echo "SELFTEST FAIL: iOS bootstrap rc 4 应返回非 0" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1
+  fi
+  grep -q '前置缺失' "$ios_stub/warn_ios4" \
+    || { echo "SELFTEST FAIL: iOS rc 4 未按前置缺失映射（$(cat "$ios_stub/warn_ios4")）" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1; }
+
+  # ⑦ 自建隧道成功却缺契约行 → 失败（--skip-forward 之外的契约是 run.sh 的隧道真相源）
+  export STUB_ARGS_FILE="$ios_stub/args_ios5"; export STUB_RC=0; export STUB_NO_CONTRACT=1
+  unset STUB_SETUP_PID || true
+  INSTALL_FLAGS=""; USER_HOST_PORT=""
+  if ensure_bootstrap_ios "" >/dev/null 2>&1; then
+    echo "SELFTEST FAIL: iOS 缺契约行应返回非 0" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1
+  fi
+
+  # 复位 iOS 自检消费的全局态（局部于本自检进程，无跨进程影响）
+  SCRIPT_DIR=$old_script_dir
+  rm -rf "$ios_stub"
+  PLATFORM="android"; UDID=""; USER_HOST_PORT=""
+  FRESHNESS_JUDGED=0; INSTALL_FLAGS=""; LAST_BOOTSTRAP_KEY=""
+  HOST_PORT=""; BASE_URL=""; FORWARD_CREATED=0; SETUP_DONE=0; IOS_TUNNEL_PIDS=()
 
   # 转发登记 + cleanup 全摘（backlog：多组批跑 adb forward 累积泄漏）：
   # 两组不同端口 + 重复登记去重 + serial 命中 + 用户 --host-port 端口不得摘除 +
