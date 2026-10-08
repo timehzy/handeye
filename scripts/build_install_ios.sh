@@ -25,8 +25,8 @@
 #
 # 前置（硬检查，缺失 exit 4 并逐项给安装指引）:
 #   xcodebuild（--skip-build 时不查）· devicectl · 真机 udid
-#   jq 是惰性依赖：仅 fixtures 解析 udid 分支需要；缺失不导致 exit 4，该分支自动跳过
-#   （用 -u / HANDEYE_UDID / idevice_id 仍可解析到设备）
+#   jq 是惰性依赖：仅 fixtures 解析 udid 分支需要；该分支缺 jq 时 die exit 4
+#   （不静默跳过，对齐 setup_ios.sh / bootstrap_ios.sh 的惯例），用 -u / HANDEYE_UDID 可跳过
 #
 # 输出契约（供 run.sh 消费，解析 stdout 里的 KEY=VALUE 行）:
 #   HANDEYE_APP_PATH=<.app 路径>   build 成功（emit 在 post-build 钩子之后）
@@ -74,8 +74,9 @@ parse_args() {
 
 # ---- udid 解析 ----
 # 优先级：-u 参数 > $HANDEYE_UDID > fixtures 的 .devices.ios_udid（jq 读取）>
-# idevice_id -l 第一台。jq 惰性：只有走到 fixtures 分支且 jq 在 PATH 才用；
-# 全链路都解析不到时返回 1（调用方按是否必须安装决定回退还是 exit 4）。
+# idevice_id -l 第一台。仅走到 fixtures 分支才需要 jq（对齐 setup_ios/bootstrap_ios 的惯例：
+# 该分支缺 jq 直接 die，不静默跳过——静默跳过会让 idevice_id 分支在无意间接管，
+# 多机时取机不可控）。全链路都解析不到时返回 1（调用方按是否必须安装决定回退还是 exit 4）。
 resolve_udid() {
   if [ -n "$UDID" ]; then
     log "目标设备（-u 参数）: $UDID"
@@ -86,12 +87,12 @@ resolve_udid() {
     log "目标设备（HANDEYE_UDID）: $UDID"
     return 0
   fi
-  if command -v jq >/dev/null 2>&1; then
-    UDID=$(jq -r '.devices.ios_udid // ""' "$FIXTURES_JSON" 2>/dev/null || true)
-    if [ -n "$UDID" ]; then
-      log "目标设备（fixtures .devices.ios_udid）: $UDID"
-      return 0
-    fi
+  command -v jq >/dev/null 2>&1 \
+    || die "未找到 jq，无法读取 \$FIXTURES_JSON 的 .devices.ios_udid（brew install jq；或用 -u / HANDEYE_UDID 显式指定设备以跳过）" 4
+  UDID=$(jq -r '.devices.ios_udid // ""' "$FIXTURES_JSON" 2>/dev/null || true)
+  if [ -n "$UDID" ]; then
+    log "目标设备（fixtures .devices.ios_udid）: $UDID"
+    return 0
   fi
   if command -v idevice_id >/dev/null 2>&1; then
     local devices count
