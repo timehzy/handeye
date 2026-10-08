@@ -24,7 +24,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        BootstrapIntentParser.parse(intent)?.let { BootstrapState.args.value = it }
+        handleBootstrapIntent(intent)
         viewModel = (application as FeedApp).viewModel
 
         val refresh = SwipeRefreshLayout(this)
@@ -48,12 +48,17 @@ class MainActivity : Activity() {
 
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
-        BootstrapIntentParser.parse(intent)?.let { BootstrapState.args.value = it }
+        handleBootstrapIntent(intent)
     }
 
     override fun onDestroy() {
         uiScope.cancel()
         super.onDestroy()
+    }
+
+    /** bootstrap deeplink 落值：冷启动走 onCreate，热启动走 onNewIntent。 */
+    private fun handleBootstrapIntent(intent: Intent?) {
+        BootstrapIntentParser.parse(intent)?.let { BootstrapState.args.value = it }
     }
 }
 

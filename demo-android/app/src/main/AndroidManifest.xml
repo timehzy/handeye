@@ -15,7 +15,8 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- 进态 deeplink：scripts/bootstrap_android.sh 注入入口，scheme 与 BuildConfig.HANDEYE_SCHEME 对应 -->
+            <!-- 进态 deeplink：scripts/bootstrap_android.sh 注入入口；
+                 scheme 字面量与 BuildConfig.HANDEYE_SCHEME 是两处独立常量，改 scheme 必须两处同改 -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
