@@ -45,15 +45,20 @@ demo 的出厂配置就是这份 example——接入者要写的配置与 demo �
 ### 2.2 装配：Application 里一行 `HandeyeInstaller.install`
 
 - **做什么**：`Application.onCreate` 里装配事件记录器、三个命名快照源（UI / 内存 /
-  持久化）、命令注册表；`enabled = BuildConfig.DEBUG` 保证 release 变体零开销。
+  持久化）、命令注册表。
 - **在哪个文件**：你的 `Application` 类。
 - **demo 样例**：[demo-android/app/src/main/java/dev/handeye/demo/FeedApp.kt](../demo-android/app/src/main/java/dev/handeye/demo/FeedApp.kt)
-  （`stateProvider("ui"/"memory"/"persist"/"bootstrap")` + `CommandRegistry`）。
+  （`stateProvider("ui"/"memory"/"persist"/"bootstrap")` + `CommandRegistry`，
+  装配行传的是 `enabled = true`——demo 两层机制：release 零开销不靠这个参数，靠
+  device-kmp 的 release 变体缺省判定（`HandeyeInstaller.kt` 注释：release 变体
+  `enabled` 缺省判 false，零 socket 零订阅）；接入者也可显式传
+  `enabled = BuildConfig.DEBUG` 让语义更直白，二者等价）。
 - **自定义配置键**：无——装配是代码事实，不进 handeye 配置（Android 的 debug server
   端口无需约定，`scripts/setup_android.sh` 会从 `/proc/<pid>/net/tcp` 反查）。
 - **不满足时的症状**：`adb shell pidof <包名>` 有进程但没有任何 loopback 端口通过
-  `/health` 实测——`setup_android.sh` 打「App 是否 install 成功、是否 debug 变体」
-  的排查指引后以退出码 4 结束。
+  `/health` 实测——`setup_android.sh` 打出三条排查指引后以退出码 4 结束：
+  App 是否 debug 变体（release 变体无 debug server）、装配器 `HandeyeInstaller.install`
+  是否已成功（需进入触发页面）、高负载 / 冷启动场景下 server 可能还在装配、稍候重跑。
 
 ### 2.3 进态：Manifest 注册 deeplink intent-filter + launcher Activity 解析
 
@@ -110,13 +115,22 @@ KMP iOS 项目的现实路径。
   framework，并限定 Debug configuration（release 不带调试能力）。
 - **在哪个文件**：你 iOS 工程的 `Podfile`（工程目录由 `IOS_PROJECT_DIR` 指向）。
 - **样例**：[docs/samples/ios-podfile-local.rb](samples/ios-podfile-local.rb)——
-  照抄改 `:path` 与 target 名即可。
+  展示的是接入形态。
+- **当前状态（如实陈述）**：handeye 仓库**尚未附带 podspec，也不产出 iOS framework
+  产物**（device-kmp 只有 ios target 声明，无 `frameworks {}` 配置与 CocoaPods 插件），
+  与 §3.2 的 SPM 一样是二期交付面。样例给出的是目标形态：落地前需要先补 podspec
+  （在你的工程里自建，或等 handeye 后续提供）——最小骨架在样例文件头部注释里。
+  Podfile 路线本身仍是非必选但现实路径，不代表必须等 handeye 发版才能接。
 - **自定义配置键**：`IOS_PROJECT_DIR`（含 xcodeproj/workspace 与 Podfile 的工程目录）。
 - **不满足时的症状**：
-  - 走二进制发布物而非本地源码 → debug 装配能力不进包，scenario 全部 FAIL
-    （内嵌 debug server 不存在，`/health` 探测超时）。
+  - 走二进制发布物而非本地源码 → debug 装配能力不进包，内嵌 debug server 不存在，
+    `/health` 探测不通 → `setup_ios.sh` 退出码 4（隧道已建但 debug server 无响应，
+    setup 阶段失败，scenario 不进入执行）。
   - Podfile 存在但无 `:path` 本地依赖 → `run.sh --check-integration` 打 `[warn]`
     指路本样例；脚本不阻断，但跑起来就是上一条症状。
+  - 样例直接 `pod install` 而 podspec 尚未补齐 → CocoaPods 报找不到
+    `HandeyeDeviceKmp` 的 podspec——这是预期内的前置缺口，先按样例头部骨架补
+    podspec，不是样例本身写错了。
 
 ### 3.2 路线二：原生 Swift App（SPM，二期）
 
