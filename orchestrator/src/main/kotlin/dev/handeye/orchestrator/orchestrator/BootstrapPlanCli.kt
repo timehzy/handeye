@@ -20,19 +20,18 @@ import java.io.File
  *
  * ## 输出契约（stdout，供 e2e.sh 逐行解析）
  *
- * 每行一个 scenario，Tab 分隔五列，顺序与注入 registry 的定义一致：
+ * 每行一个 scenario，Tab 分隔四列，顺序与注入 registry 的定义一致：
  *
  * ```
- * <name>\t<page>\t<source>\t<host_path>\t<smb_path>
+ * <name>\t<page>\t<source>\t<host_path>
  * ```
  *
- * - `page`：[HostPage.id]（`demo` / `story`）
+ * - `page`：[HostPage.id]（当前仅 `demo`）
  * - `source`：media 需求反查出的 `device_path` 相对段（如 `e2e_media/xxx.mp4`）；draft 需求
  *   输出 `draft:<key>`
- * - `host_path` / `smb_path`：media 需求反查素材的两条源路径（Mac 本地 / 共享盘），供脚本
- *   三级兜底；draft 需求两列为空
+ * - `host_path`：media 需求反查素材的 host 本地源路径，供脚本拉取兜底；draft 需求该列为空
  *
- * media 需求声明多个素材时，`source` / `host_path` / `smb_path` 三列各自按 `|` 连接，列内
+ * media 需求声明多个素材时，`source` / `host_path` 两列各自按 `|` 连接，列内
  * 元素顺序与需求的 `needs` 顺序一致（`e2e.sh` 按 `|` 拆回多个素材）。
  *
  * ## 退出码
@@ -92,18 +91,15 @@ object BootstrapPlanCli {
         }
 
         for (meta in scenarios) {
-            val (source, hostPath, smbPath) = when (val need = meta.fixture) {
+            val (source, hostPath) = when (val need = meta.fixture) {
                 is MediaNeed -> {
                     val list = resolved[meta.name] ?: emptyList()
-                    Triple(
-                        list.joinToString("|") { it.devicePath },
-                        list.joinToString("|") { it.hostPath.orEmpty() },
-                        list.joinToString("|") { it.smbPath.orEmpty() },
-                    )
+                    list.joinToString("|") { it.devicePath } to
+                        list.joinToString("|") { it.hostPath.orEmpty() }
                 }
-                is DraftNeed -> Triple("draft:${need.key}", "", "")
+                is DraftNeed -> "draft:${need.key}" to ""
             }
-            println("${meta.name}\t${meta.page.id}\t$source\t$hostPath\t$smbPath")
+            println("${meta.name}\t${meta.page.id}\t$source\t$hostPath")
         }
         return 0
     }

@@ -21,11 +21,10 @@ import java.io.File
  */
 object FixtureCatalogValidator {
 
-    /** 素材条目路径三件套：沙盒相对段 / Mac 本地源 / 共享盘兜底源。 */
+    /** 素材条目路径对：沙盒相对段 / Mac 本地源。 */
     data class ResolvedMedia(
         val devicePath: String,
         val hostPath: String?,
-        val smbPath: String?,
     )
 
     /** 反查失败信息，key 为场景名。 */
@@ -78,8 +77,7 @@ object FixtureCatalogValidator {
                     continue
                 }
                 val hostPath = match.string("host_path")
-                val smbPath = match.string("smb_path")
-                val sourceViolation = sourceViolation(hostPath, smbPath)
+                val sourceViolation = sourceViolation(hostPath)
                 if (sourceViolation != null) {
                     msgs += sourceViolation
                     continue
@@ -87,7 +85,6 @@ object FixtureCatalogValidator {
                 selected += ResolvedMedia(
                     devicePath = devicePath!!,
                     hostPath = hostPath,
-                    smbPath = smbPath,
                 )
                 selectedPaths += devicePath
             }
@@ -144,27 +141,22 @@ object FixtureCatalogValidator {
     }
 
     /**
-     * 校验 media 两条源路径的形态，返回违规文案或 null。
+     * 校验 media 源路径的形态，返回违规文案或 null。
      *
-     * 与 [isValidRelativePath] 收紧 device_path 字符集不同，host_path / smb_path 是供
-     * bootstrap 脚本调 fetch_media.sh 拉取的宿主源路径，经 bash 引号包裹进 mount_smbfs / cp，
-     * 不进 URL query——所以这里只校验「形状是否像合法源」，不收紧字符（中文/空格在本地与
-     * 共享盘路径里合法）。规则：
+     * 与 [isValidRelativePath] 收紧 device_path 字符集不同，host_path 是供
+     * bootstrap 脚本调 fetch_media.sh 拉取的宿主源路径，经 bash 引号包裹进 cp，
+     * 不进 URL query——所以这里只校验「形状是否像合法源」，不收紧字符（中文/空格在
+     * 本地路径里合法）。规则：
      * - host_path 非空时须是 host 本地绝对路径（`/` 开头）；
-     * - smb_path 非空时须是 UNC（`\\` 或 `//` 开头）或已挂载绝对路径（`/` 开头）；
-     * - 两者都空 → 设备无素材时无源可拉，记违规早报。
+     * - host_path 为空 → 设备无素材时无源可拉，记违规早报。
      */
-    private fun sourceViolation(hostPath: String?, smbPath: String?): String? {
+    private fun sourceViolation(hostPath: String?): String? {
         val host = hostPath?.takeIf { it.isNotBlank() }
-        val smb = smbPath?.takeIf { it.isNotBlank() }
-        if (host == null && smb == null) {
-            return "反查命中的素材无可用源路径（host_path / smb_path 都为空）"
+        if (host == null) {
+            return "反查命中的素材无可用源路径（host_path 为空）"
         }
-        if (host != null && !host.startsWith("/")) {
+        if (!host.startsWith("/")) {
             return "反查命中的素材 host_path 非法（非 host 本地绝对路径，$host）"
-        }
-        if (smb != null && !(smb.startsWith("/") || smb.startsWith("\\"))) {
-            return "反查命中的素材 smb_path 非法（非 UNC 或已挂载绝对路径，$smb）"
         }
         return null
     }
