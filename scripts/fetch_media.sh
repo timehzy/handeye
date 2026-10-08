@@ -13,12 +13,14 @@
 #   -s serial               指定目标设备序列号（多机场景）；缺省 $ANDROID_SERIAL 或 adb devices 第一台
 #   -h, --help              打帮助
 #
-# 输出契约（供 bootstrap 组 work_path 拼装，解析 stdout 里的 KEY=VALUE 行）:
+# 输出契约（stdout 最后一行 KEY=VALUE，预留）:
 #   HANDEYE_MEDIA_DEVICE_PATH=<相对段>
+#   预留契约：当前 bootstrap 组用自身已知相对段拼装 work_path，不解析本行；供未来独立调用方使用
 #
 # 退出码:
 #   0  成功（含设备已有跳过）
-#   1  参数错 / 相对段非法 / host 素材文件不存在
+#   1  相对段非法 / host 素材文件不存在
+#   2  参数错（未知参数 / 缺值 / 缺 --media-path / --media-host）
 #   4  前置缺失（adb 未装）/ 设备建目录或 adb push 失败
 set -eu
 
@@ -50,21 +52,21 @@ parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --media-path)
-        [ -n "${2:-}" ] || die "参数 --media-path 缺少值" 1
+        [ -n "${2:-}" ] || die "参数 --media-path 缺少值" 2
         MEDIA_PATH="$2"; shift 2 ;;
       --media-host)
-        [ -n "${2:-}" ] || die "参数 --media-host 缺少值" 1
+        [ -n "${2:-}" ] || die "参数 --media-host 缺少值" 2
         MEDIA_HOST="$2"; shift 2 ;;
       -s)
-        [ -n "${2:-}" ] || die "参数 -s 缺少设备序列号" 1
+        [ -n "${2:-}" ] || die "参数 -s 缺少设备序列号" 2
         SERIAL="$2"; shift 2 ;;
       -h|--help) usage_from_header "$0" && exit 0 ;;
-      *) printf '错误: 未知参数 %s\n' "$1" >&2; usage_from_header "$0" >&2; exit 1 ;;
+      *) printf '错误: 未知参数 %s\n' "$1" >&2; usage_from_header "$0" >&2; exit 2 ;;
     esac
   done
 
-  [ -n "$MEDIA_PATH" ] || die "缺少 --media-path <沙盒相对段>" 1
-  [ -n "$MEDIA_HOST" ] || die "缺少 --media-host <host 绝对路径>" 1
+  [ -n "$MEDIA_PATH" ] || die "缺少 --media-path <沙盒相对段>" 2
+  [ -n "$MEDIA_HOST" ] || die "缺少 --media-host <host 绝对路径>" 2
   if ! is_valid_relative_path "$MEDIA_PATH"; then
     printf '错误: --media-path 需为非空相对段，分段非空且不含 ..，仅限字母数字点下划线连字符\n' >&2
     printf "  实际: '%s'\n" "$MEDIA_PATH" >&2
@@ -99,7 +101,8 @@ main() {
     $ADB push "$MEDIA_HOST" "$device_abs" || die "adb push 失败（真机未连？）" 4
   fi
 
-  # 契约行：固定为 stdout 最后一行，供 bootstrap 组拼 work_path 消费
+  # 契约行（预留）：固定为 stdout 最后一行。当前 bootstrap 组用自身已知相对段拼装
+  # work_path，不解析本行；供未来独立调用方使用
   echo "HANDEYE_MEDIA_DEVICE_PATH=$MEDIA_PATH"
 }
 
