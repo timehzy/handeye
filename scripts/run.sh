@@ -503,6 +503,8 @@ ensure_bootstrap_demo() { # $1 = source（plan source 列：设备沙盒相对�
       6) warn "deeplink 注入失败：Manifest 是否注册了 \$HANDEYE_DEEPLINK_SCHEME intent-filter？见 docs/integration-points.md" ;;
       7) warn "冷启动失败或秒崩（am start 失败 / 20s 内进程未出现）" ;;
       8) warn "进态超时（Track A/B 均未通过）" ;;
+      9) warn "gradle build 失败（构建链路，见上方 build_install_android.sh 输出）" ;;
+      10) warn "adb install 失败（设备连接 / 安装被拒，见上方 build_install_android.sh 输出）" ;;
       *) warn "未预期的退出码（见 bootstrap_android.sh 头部退出码表）" ;;
     esac
     return 1
