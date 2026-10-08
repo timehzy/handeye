@@ -2,7 +2,7 @@
 
 **你是谁**：handeye 设备端的 iOS 原生（Swift Package）入口。
 
-**状态**：**二期**。本期（0.1.0）只冻结接口签名与包骨架，不实现——
+**状态**：**二期**。本期（0.1.1）冻结接口签名、包骨架与 bootstrap 启动契约，不实现——
 `Sources/HandeyeDevice/Handeye.swift` 是与 device-kmp `commonMain` 一一对应的协议草案，
 `docs/protocol-mapping.md` 是协议 v1 到 Swift 侧的映射；
 [`docs/bootstrap-contract.md`](docs/bootstrap-contract.md) 是 bootstrap 冷启动进态契约（harness 脚本 `scripts/bootstrap_ios.sh` 的

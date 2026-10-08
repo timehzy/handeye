@@ -22,8 +22,9 @@
 |---|---|---|---|
 | KMP 工程 | `device-kmp` | klib（commonMain + androidDebug Ktor CIO + androidRelease no-op + iosMain 注入转发） | ✅ 0.1.0 |
 | Android 原生 | `device-android` | AAR 入口（承载 device-kmp 同一份源码） | ✅ 0.1.0 |
-| iOS 原生 | `device-ios` | Swift Package（二期） | 🔜 接口草案已冻结（`Handeye.swift` + 协议映射） |
+| iOS 原生 | `device-ios` | Swift Package（二期） | 🔜 接口草案 + 启动契约已冻结（`Handeye.swift` + 协议映射 + bootstrap 契约文档） |
 | 场景编排（host） | `orchestrator` | JVM 库 + CLI：三端 scenario 共用 | ✅ 0.1.0 |
+| runner 脚手架 | `scripts/` | 双端 build/setup/bootstrap + 素材兜底 + 批跑总控 + 集成诊断 | ✅ 0.1.1 |
 
 ## 项目结构
 
@@ -36,7 +37,8 @@ handeye/
 ├── device-ios/          # 【iOS 原生·二期】Swift 接口签名草案 + 协议映射文档
 ├── demo-android/        # 信息流 demo App + 6 个 e2e scenario + 薄封装跑批入口
 ├── conformance/         # 协议一致性：schema 校验 + golden 对拍 CLI
-└── scripts/             # runner 侧脚手架：build / setup / bootstrap / run 总控
+├── fixtures/            # e2e fixtures 模板：设备号 + 素材反查 catalog（含样例 mp4）
+└── scripts/             # runner 侧脚手架：build / setup / bootstrap / 素材兜底 / 批跑总控 / 集成诊断
 ```
 
 ## Quickstart：跑 demo（Android 真机）
@@ -45,12 +47,16 @@ handeye/
 # 1. 构建并安装 demo App，建 adb forward，跑全部 6 个 scenario
 ./scripts/run.sh --all
 
+# 1b. iOS 真机同理（需 device-ios 二期实现落地后可用）
+./scripts/run.sh --ios --all
+
 # 2. 或手动：装包后单跑一个场景
 ./gradlew :demo-android:e2e:run --args="refresh_shows_latest_feed http://localhost:<port>"
 ```
 
 > 接入者：从 `scripts/handeye.example.sh` 复制一份 `scripts/handeye.local.sh` 开始
 > （已 gitignore），按你的工程改默认值即可；demo 的出厂配置就是这份 example。
+> fixtures 模板同理：`fixtures/e2e.example.json` → `fixtures/e2e.local.json`。
 
 6 个场景覆盖：刷新成功三源一致 / 失败保缓存 / 重复刷新 / 点赞持久化 /
 重建恢复 / 冷启动零网络走持久化。
@@ -102,8 +108,14 @@ runner 侧脚手架（构建 / 装包 / 隧道 / 进态注入）按你的工程�
 ## 协议与文档
 
 - 协议契约：`protocol/spec.md` + golden 样本
+- 接入点清单（双端逐项 + iOS Podfile 样例）：`docs/integration-points.md`
+- scenario 写作手册：`docs/how-to-write.md`
+- 真机排障（七坑索引）：`docs/troubleshooting.md`
+- fixtures 模板说明：`fixtures/README.md`
+- iOS 启动契约：`device-ios/docs/bootstrap-contract.md`
 - 设计文档：`docs/superpowers/specs/2026-09-28-handeye-open-source-design.md`
-- 实施计划：`docs/superpowers/plans/2026-09-28-handeye-m1-m5.md`
+- 实施计划：`docs/superpowers/plans/2026-09-28-handeye-m1-m5.md`、
+  `docs/superpowers/plans/2026-09-29-handeye-n1-n4.md`（runner 脚手架 N1–N4）
 
 ## License
 
