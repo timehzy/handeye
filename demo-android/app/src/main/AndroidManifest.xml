@@ -15,6 +15,13 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- 进态 deeplink：scripts/bootstrap_android.sh 注入入口，scheme 与 BuildConfig.HANDEYE_SCHEME 对应 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="handeye" android:host="bootstrap" />
+            </intent-filter>
         </activity>
     </application>
 

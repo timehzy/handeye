@@ -1,6 +1,7 @@
 package dev.handeye.demo
 
 import android.app.Activity
+import android.content.Intent
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -23,6 +24,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        BootstrapIntentParser.parse(intent)?.let { BootstrapState.args.value = it }
         viewModel = (application as FeedApp).viewModel
 
         val refresh = SwipeRefreshLayout(this)
@@ -42,6 +44,11 @@ class MainActivity : Activity() {
         }
 
         if (savedInstanceState == null) viewModel.onRefresh()
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        BootstrapIntentParser.parse(intent)?.let { BootstrapState.args.value = it }
     }
 
     override fun onDestroy() {
