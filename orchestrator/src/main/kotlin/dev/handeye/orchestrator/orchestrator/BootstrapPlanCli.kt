@@ -106,16 +106,17 @@ object BootstrapPlanCli {
 
     /**
      * 解析 fixtures catalog 路径：`HANDEYE_FIXTURES_JSON` > `e2e.local.json`（本机覆盖）>
-     * `e2e.example.json`（模板回退）。相对候选覆盖 working dir 在 `insedit/` 根或
-     * `e2e-scenarios/` 子项目两种 gradle run 布局；本机 catalog 存在时优先用本机值。
+     * `e2e.example.json`（模板回退）。相对候选覆盖两种运行布局的 working dir：仓库根
+     * （orchestrator CLI 直跑）与 `demo-android/e2e/` 子工程（`:demo-android:e2e:run`，
+     * 仓库根在其 `../..`）；本机 catalog 存在时优先用本机值。
      */
     private fun defaultCatalogJson(): File {
         val env = System.getenv("HANDEYE_FIXTURES_JSON")
         if (!env.isNullOrBlank()) return File(env)
         val candidates = listOf(
-            "e2e-scenarios/fixtures/e2e.local.json",
+            "../../fixtures/e2e.local.json",
             "fixtures/e2e.local.json",
-            "e2e-scenarios/fixtures/e2e.example.json",
+            "../../fixtures/e2e.example.json",
             "fixtures/e2e.example.json",
         )
         return candidates.firstOrNull { File(it).exists() }?.let { File(it) }
