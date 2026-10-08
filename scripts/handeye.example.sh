@@ -15,6 +15,7 @@
 : "${ANDROID_SERIAL:=}"                    # 多机时指定；空 = adb devices 第一台
 
 # ---- iOS ----
+: "${IOS_PROJECT_DIR:=demo-ios/}"          # iOS 接入工程目录（含 xcodeproj/workspace 与 Podfile）；相对仓库根或绝对路径
 : "${IOS_SCHEME:=handeye-demo}"            # xcodebuild -scheme
 : "${IOS_WORKSPACE:=}"                     # 非空用 -workspace，否则 -project（自动探测 xcodeproj）
 : "${IOS_DEVICE_PORT:=27778}"              # device 端 debug server 固定端口（约定，不探测）
