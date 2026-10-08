@@ -41,3 +41,6 @@ build/
 # handeye 脚手架本地配置
 scripts/handeye.local.sh
 scripts/hooks/*.sh
+
+# e2e fixtures 本机覆盖（由 fixtures/e2e.example.json 复制）
+fixtures/e2e.local.json
