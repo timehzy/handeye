@@ -10,7 +10,9 @@
 #                         内以 `|` 分隔）；文件落盘到容器 Documents/handeye/media/<basename>，
 #                         进 deeplink 的 work_path 为相对 Documents 段 handeye/media/<basename>
 #                         （Documents 根 UUID 运行时随机，host 无法静态推断，上游约定）。
-#                         紧随其后的 --media-host 归到最近一次 --media-path 开启的素材
+#                         紧随其后的 --media-host 归到最近一次 --media-path 开启的素材；
+#                         注意 `--media-path 'a|b'` 一次开启多个素材时 --media-host 只归其中
+#                         最后一个素材——每个素材各带 host 须重复 --media-path 分别成组传入
 #   --media-host <path>   素材 Mac 本地绝对路径（push 源），归属最近一次 --media-path 的素材。
 #                         iOS 侧 push 由本脚本走 afcclient 完成（不经过 fetch_media.sh），
 #                         设备上已有该素材时跳过 push、无需此参数
@@ -92,8 +94,17 @@ SCRIPT_DIR="$HANDEYE_ROOT/scripts"
 readonly DEVICE_MEDIA_DIR="handeye/media"          # 素材落盘目录（相对 Documents）
 readonly BOOTSTRAP_CONFIG_NAME="handeye_bootstrap.json"
 readonly STATE_POLL_INTERVAL_SEC=2
-STATE_POLL_TIMEOUT_SEC="${HANDEYE_BOOTSTRAP_READY_TIMEOUT_SEC:-30}"
-SETUP_TIMEOUT_SEC="${HANDEYE_BOOTSTRAP_SETUP_TIMEOUT_SEC:-40}"
+
+# 超时环境变量数字校验（m4）：非数字给中文 warn 并回退默认值，否则 $((...)) 算术
+# 会抛 integer expression expected 裸错误让人摸不着头脑。
+validate_timeout() { # $1=值 $2=变量名 $3=默认值；stdout = 可用值
+  case "$1" in
+    ''|*[!0-9]*) warn "$2 非数字（'$1'），回退默认值 $3"; printf '%s' "$3" ;;
+    *)          printf '%s' "$1" ;;
+  esac
+}
+STATE_POLL_TIMEOUT_SEC=$(validate_timeout "${HANDEYE_BOOTSTRAP_READY_TIMEOUT_SEC:-30}" HANDEYE_BOOTSTRAP_READY_TIMEOUT_SEC 30)
+SETUP_TIMEOUT_SEC=$(validate_timeout "${HANDEYE_BOOTSTRAP_SETUP_TIMEOUT_SEC:-40}" HANDEYE_BOOTSTRAP_SETUP_TIMEOUT_SEC 40)
 
 # ---- 全局变量（parse_args 填） ----
 SKIP_BUILD=""
@@ -111,6 +122,7 @@ SETUP_PID=""            # 后台 setup_ios.sh 进程（持隧道）
 SETUP_OUT=""            # 其 stdout 落盘文件（读契约行用）
 SKIP_FORWARD_SET=""     # --skip-forward 生效标记（wait_ready / emit_result 分岔）
 KEEP_SETUP=""           # 成功路径置 1：EXIT trap 不杀后台 setup_ios，隧道留用
+DEVICECTL=""            # devicectl 调用前缀（check_prerequisites 解析：裸 devicectl 或 "xcrun devicectl"）
 
 # ---- 参数解析 ----
 
@@ -196,10 +208,17 @@ check_prerequisites() {
     "afcclient:brew install libimobiledevice" \
     "iproxy:brew install libimobiledevice" \
     "curl:macOS 自带"
-  # devicectl 单独判：Xcode 自带 xcrun devicectl，PATH 里可能没有裸 devicectl（对齐 build_install_ios.sh）
+  # devicectl 单独判：Xcode 自带 xcrun devicectl，PATH 里可能没有裸 devicectl（对齐 build_install_ios.sh）。
+  # 通过后立即解析出 $DEVICECTL 调用前缀，后续所有调用点统一走它——否则前置宽容、运行期
+  # 裸 devicectl command-not-found 被 2>/dev/null 吞掉，进程存活/冷启动会被误判（M1）。
   if ! command -v devicectl >/dev/null 2>&1 && ! xcrun devicectl --help >/dev/null 2>&1; then
     printf '缺少 devicectl（冷启动重拉 App；Xcode 自带 xcrun devicectl，缺则装完整 Xcode）\n' >&2
     exit 4
+  fi
+  if command -v devicectl >/dev/null 2>&1; then
+    DEVICECTL="devicectl"
+  else
+    DEVICECTL="xcrun devicectl"
   fi
 }
 
@@ -257,14 +276,18 @@ afc() {
 }
 
 # 容器内文件是否已存在：ls 父目录 + 精确匹配 basename（afcclient 无 test -f）。
+# 必须整列精确匹配（awk $1 == name）：容器里有 ba.mp4 时查 a.mp4，子串匹配会误判已存在，
+# 注入指向不存在文件的配置 → 进态超时且排查指引全错（M2）。
 afc_has() { # $1 = 容器内路径
-  afc "ls ${1%/*}" 2>/dev/null | grep -qF "${1##*/}"
+  afc "ls ${1%/*}" 2>/dev/null | awk -v name="${1##*/}" '$1 == name {found=1} END {exit !found}'
 }
 
 # App 进程是否在跑：devicectl process list 按 bundle id 过滤（进程存在性弱判定，仅给
 # --no-relaunch / 冷启动前置用；真就绪以 wait_ready 的 /source 强判定为准）。
 app_running() {
-  devicectl device process list --device "$UDID" 2>/dev/null \
+  # shellcheck disable=SC2086 —— $DEVICECTL 故意不加引号："xcrun devicectl" 需分词成两个参数，
+  # 与 _common.sh 的 $ADB 受控 token 惯例一致；词表不是用户输入，无注入面
+  $DEVICECTL device process list --device "$UDID" 2>/dev/null \
     | awk -v app="$APP_ID" '$0 ~ app {found=1} END {exit !found}'
 }
 
@@ -305,19 +328,37 @@ push_media() {
       exit 5
     fi
 
+    # 扩展名取自 basename：无扩展名的素材直接拒绝（设备接收端按扩展名识别媒体类型，
+    # 且避免历史实现 mktemp 模板拼非法路径在 set -e 下静默 exit 1 违反 exit 5 契约，M3）
+    local host_base="${host_path##*/}" ext
+    case "$host_base" in
+      *.*) ext="${host_base##*.}" ;;
+      *)
+        printf '错误: media[%s] host 素材无扩展名: %s\n' "$i" "$host_path" >&2
+        printf '  设备端按扩展名识别媒体类型，请改名（如 %s.mp4）后重试\n' "$host_base" >&2
+        exit 5 ;;
+    esac
+
     # push 前先复制到 /tmp 的 ASCII 路径：afcclient put LOCALPATH 按空格切分，含中文/
-    # 空格的本地路径会被错误分词甚至卡死
-    local ascii_src
-    ascii_src="$(mktemp -t handeye_media).${host_path##*.}"
-    cp "$host_path" "$ascii_src"
+    # 空格的本地路径会被错误分词甚至卡死。用 mktemp -d 建目录、目录内拼固定文件名——
+    # mktemp -t 基文件 + 拼后缀会产生两个路径，基文件在每次 push 后泄漏（m1）；
+    # 目录所有出口（cp 失败 / put 失败 / 成功）统一 rm -rf。
+    local ascii_dir ascii_src
+    ascii_dir="$(mktemp -d -t handeye_media)"
+    ascii_src="$ascii_dir/media.$ext"
+    if ! cp "$host_path" "$ascii_src"; then
+      rm -rf "$ascii_dir"
+      printf '错误: media[%s] 复制 host 素材到临时路径失败: %s\n' "$i" "$host_path" >&2
+      exit 5
+    fi
     log "media[$i] afcclient put '$host_path' → 容器 $remote"
     if ! afc "put -rf $ascii_src $remote" "ls Documents/$DEVICE_MEDIA_DIR" >/dev/null; then
-      rm -f "$ascii_src"
+      rm -rf "$ascii_dir"
       printf '错误: media[%s] afcclient 推送素材失败: %s\n' "$i" "$host_path" >&2
       printf '  确认: 真机已解锁信任 · App 已装（--container 依赖已装 App 才有沙盒）\n' >&2
       exit 5
     fi
-    rm -f "$ascii_src"
+    rm -rf "$ascii_dir"
     if ! afc_has "$remote"; then
       printf '错误: media[%s] push 后容器内未找到 %s（afcclient 未报错但文件缺失）\n' "$i" "$remote" >&2
       exit 5
@@ -374,15 +415,18 @@ write_bootstrap_config() {
 cold_start() {
   log "冷启动重拉: 真杀旧进程 → launch $APP_ID"
   local pid
-  pid="$(devicectl device process list --device "$UDID" 2>/dev/null \
+  # shellcheck disable=SC2086 —— $DEVICECTL 故意不加引号："xcrun devicectl" 需分词，见 app_running
+  pid="$($DEVICECTL device process list --device "$UDID" 2>/dev/null \
     | awk -v app="$APP_ID" '$0 ~ app {print $1; exit}' || true)"
   if [ -n "$pid" ]; then
     log "terminate: SIGKILL pid=$pid（热启动不重读配置，必须真杀）"
-    devicectl device process signal --device "$UDID" --pid "$pid" --signal SIGKILL >/dev/null 2>&1 || true
+    # shellcheck disable=SC2086 —— 同上，$DEVICECTL 受控 token 需分词
+    $DEVICECTL device process signal --device "$UDID" --pid "$pid" --signal SIGKILL >/dev/null 2>&1 || true
   fi
   sleep 2   # 等进程回收 + 端口释放，launch 立即跟上会偶发失败
   log "launch $APP_ID"
-  if ! devicectl device process launch --device "$UDID" "$APP_ID" >/dev/null 2>&1; then
+  # shellcheck disable=SC2086 —— 同上，$DEVICECTL 受控 token 需分词
+  if ! $DEVICECTL device process launch --device "$UDID" "$APP_ID" >/dev/null 2>&1; then
     printf '错误: devicectl launch 启动 App 失败\n' >&2
     printf '  确认: bundle id %s 已装真机 · 真机已解锁 · USB 已连\n' "$APP_ID" >&2
     exit 7
@@ -495,6 +539,8 @@ cleanup() {
   if [ -n "${SETUP_PID:-}" ] && [ -z "$KEEP_SETUP" ]; then
     kill "$SETUP_PID" 2>/dev/null || true
   fi
+  # SETUP_OUT 是 mktemp 落盘文件，成功 / 失败 / 超时所有出口都不留（m2）
+  [ -n "${SETUP_OUT:-}" ] && rm -f "$SETUP_OUT" || true
 }
 
 # ---- 自检（隐藏入口，供无设备环境验证纯 host 逻辑） ----
