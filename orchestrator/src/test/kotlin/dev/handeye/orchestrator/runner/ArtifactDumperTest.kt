@@ -26,7 +26,7 @@ class ArtifactDumperTest {
     fun `failure dump resolves e2e artifacts from e2e scenarios working directory`() {
         val workspace = Files.createTempDirectory("artifact-dumper").toFile()
         try {
-            val repositoryRoot = File(workspace, "insedit").apply { mkdirs() }
+            val repositoryRoot = File(workspace, "repo").apply { mkdirs() }
             File(repositoryRoot, "settings.gradle.kts").writeText("")
             File(repositoryRoot, "e2e").mkdirs()
             val scenariosWorkingDirectory = File(repositoryRoot, "e2e-scenarios").apply { mkdirs() }
