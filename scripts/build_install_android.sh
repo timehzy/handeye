@@ -49,31 +49,7 @@ parse_args() {
   done
 }
 
-# ---- 前置检查与设备选择 ----
-
-# 设备选择优先级：$ANDROID_SERIAL（环境变量已 export 则 adb 原生识别；配置值走 -s 显式指定）
-# → adb devices 第一台。多机且未指定时 warn 并用第一台。
-resolve_device() {
-  if [ -n "${ANDROID_SERIAL:-}" ]; then
-    SERIAL=$ANDROID_SERIAL
-    log "目标设备（ANDROID_SERIAL）: $SERIAL"
-  else
-    local devices count first
-    devices=$(adb devices | awk 'NR>1 && $2=="device" {print $1}')
-    count=$(printf '%s\n' "$devices" | awk 'NF {n++} END {print n+0}')
-    if [ "$count" -eq 0 ]; then
-      die "没有可用设备（adb devices 无在线设备，先连机并确认 USB 调试授权）" 4
-    fi
-    if [ "$count" -gt 1 ]; then
-      warn "检测到 $count 台设备且未设 ANDROID_SERIAL，使用第一台"
-    fi
-    first=$(printf '%s\n' "$devices" | head -1)
-    SERIAL=$first
-    log "目标设备（adb devices 第一台）: $SERIAL"
-  fi
-  # 故意不整体加引号：$ADB 需要在调用点分词成 "adb -s <serial> ..."（与 _common.sh 约定一致）
-  ADB="adb ${SERIAL:+-s $SERIAL}"
-}
+# ---- 前置检查与设备选择（resolve_device 为 _common.sh 公共实现） ----
 
 # ---- APK 新鲜度判定 ----
 
@@ -209,7 +185,7 @@ main() {
     die "gradlew 不可执行：$HANDEYE_ROOT/gradlew（chmod +x gradlew）" 4
   fi
   if [ -z "$SKIP_INSTALL" ]; then
-    resolve_device
+    resolve_device ""
   fi
 
   if [ -z "$SKIP_BUILD" ]; then

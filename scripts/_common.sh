@@ -51,6 +51,37 @@ require_vars() {
   [ "$missing" -eq 0 ] || exit 4
 }
 
+# 设备选择（build / setup 共用的单份实现，替代各自内联副本）：
+# 优先级：调用方显式 serial（$1，可空，如 -s 参数）> $ANDROID_SERIAL > adb devices 第一台。
+# 输出全局 SERIAL（选中序列号，可空）并设置全局 ADB（"adb" 或 "adb -s <serial>"）。
+# 多机且未指定时 warn 并用第一台；无在线设备 die exit 4（die 提示语取两脚本中较完整的版本，
+# 原实现里两者本就一致，无需按场景参数化）。
+# 用法: resolve_device [explicit_serial]
+resolve_device() {
+  local explicit="${1:-}" devices count first
+  if [ -n "$explicit" ]; then
+    SERIAL=$explicit
+    log "目标设备（-s 参数）: $SERIAL"
+  elif [ -n "${ANDROID_SERIAL:-}" ]; then
+    SERIAL=$ANDROID_SERIAL
+    log "目标设备（ANDROID_SERIAL）: $SERIAL"
+  else
+    devices=$(adb devices | awk 'NR>1 && $2=="device" {print $1}')
+    count=$(printf '%s\n' "$devices" | awk 'NF {n++} END {print n+0}')
+    if [ "$count" -eq 0 ]; then
+      die "没有可用设备（adb devices 无在线设备，先连机并确认 USB 调试授权）" 4
+    fi
+    if [ "$count" -gt 1 ]; then
+      warn "检测到 $count 台设备且未指定（-s 参数 / ANDROID_SERIAL），使用第一台"
+    fi
+    first=$(printf '%s\n' "$devices" | head -1)
+    SERIAL=$first
+    log "目标设备（adb devices 第一台）: $SERIAL"
+  fi
+  # 故意不整体加引号：$ADB 需要在调用点分词成 "adb -s <serial> ..."（与 _common.sh 各函数约定一致）
+  ADB="adb ${SERIAL:+-s $SERIAL}"
+}
+
 # 等 App 进程出现，返回 pid（stdout）。40 次 × 0.5s = 20s 超时返回 1。
 # pidof 在罕见的多用户/重复安装场景可能返回多个 pid，只取第一个。
 # 调用前需设置 $ADB（"adb" 或 "adb -s <serial>"，本函数内不加引号、故意分词）。

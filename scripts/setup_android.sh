@@ -54,36 +54,11 @@ parse_args() {
         LOCAL_PORT="$1"; shift 1 ;;
     esac
   done
-  case "$LOCAL_PORT" in
-    ''|*[!0-9]*) [ -z "$LOCAL_PORT" ] || { printf '错误: localPort 必须是数字（收到: %s）\n' "$LOCAL_PORT" >&2; exit 2; } ;;
-  esac
-}
-
-# ---- 设备选择（与 build_install_android.sh 同款逻辑的内联副本，两脚本各自维护） ----
-
-# 优先级：-s 参数 > $ANDROID_SERIAL > adb devices 第一台。多机且未指定时 warn 并用第一台。
-resolve_device() {
-  if [ -n "$SERIAL" ]; then
-    log "目标设备（-s 参数）: $SERIAL"
-  elif [ -n "${ANDROID_SERIAL:-}" ]; then
-    SERIAL=$ANDROID_SERIAL
-    log "目标设备（ANDROID_SERIAL）: $SERIAL"
-  else
-    local devices count first
-    devices=$(adb devices | awk 'NR>1 && $2=="device" {print $1}')
-    count=$(printf '%s\n' "$devices" | awk 'NF {n++} END {print n+0}')
-    if [ "$count" -eq 0 ]; then
-      die "没有可用设备（adb devices 无在线设备，先连机并确认 USB 调试授权）" 4
-    fi
-    if [ "$count" -gt 1 ]; then
-      warn "检测到 $count 台设备且未指定（-s / ANDROID_SERIAL），使用第一台"
-    fi
-    first=$(printf '%s\n' "$devices" | head -1)
-    SERIAL=$first
-    log "目标设备（adb devices 第一台）: $SERIAL"
+  if [ -n "$LOCAL_PORT" ]; then
+    case "$LOCAL_PORT" in
+      *[!0-9]*) die "localPort 必须是数字（收到: $LOCAL_PORT）" 2 ;;
+    esac
   fi
-  # 故意不整体加引号：$ADB 需要在调用点分词成 "adb -s <serial> ..."（与 _common.sh 约定一致）
-  ADB="adb ${SERIAL:+-s $SERIAL}"
 }
 
 # ---- 主流程 ----
@@ -94,7 +69,8 @@ main() {
   # 配置加载放在 parse_args 之后：-h 不需要任何配置（与 build_install_android.sh 一致）
   load_config
   require_tools "adb:Android SDK platform-tools" "curl:macOS 自带"
-  resolve_device
+  # resolve_device 为 _common.sh 公共实现；SERIAL 此时只可能是 -s 参数值（可空），传给它作最高优先级
+  resolve_device "$SERIAL"
 
   log "定位 App 进程 $APP_ID"
   if ! APP_PID=$(wait_app_pid); then
@@ -113,7 +89,8 @@ main() {
   log "debug server device 端口: $DEVICE_PORT"
 
   # host 端口缺省 = device 端口。两者相同时 discover 留下的 tcp:<dec>→tcp:<dec> 转发直接复用；
-  # 不同时先清掉 host 端口上可能残留的指向其它 device 端口的 stale forward，再建新的。
+  # 不同时先清掉 host 端口上可能残留的指向其它 device 端口的 stale forward，再建新的，
+  # 并清掉 discover 留下的 device 端口转发（见下方注释）。
   local host_port
   host_port="${LOCAL_PORT:-$DEVICE_PORT}"
   if [ "$host_port" != "$DEVICE_PORT" ]; then
@@ -122,6 +99,9 @@ main() {
     if ! $ADB forward "tcp:$host_port" "tcp:$DEVICE_PORT" >/dev/null; then
       die "adb forward 失败（host 端口 $host_port 可能被占用；换个 localPort 重试）" 3
     fi
+    # 显式 host 端口下 discover 留下的 tcp:<device>→tcp:<device> 转发已被取代（健康检查走
+    # host 端口转发），清掉它避免残留；缺省路径（host=device）复用该转发，不动。
+    $ADB forward --remove "tcp:$DEVICE_PORT" >/dev/null 2>&1 || true
   else
     log "adb forward tcp:$host_port tcp:$DEVICE_PORT（反查阶段已建立，复用）"
   fi
@@ -146,6 +126,8 @@ main() {
 
 移除隧道:
     $ADB forward --remove tcp:$host_port
+    # 显式 localPort 时两条转发（host 端口 + discover 的 device 端口）都会被清：
+    # device 端口那条在建立隧道时已删除，这里再删 host 端口那条即全部清理干净
 EOF
 }
 
