@@ -99,6 +99,8 @@ fun runRefreshFailureKeepsCache(baseUrl: String): ScenarioResult = handeyeTest(
 )
 ```
 
+（示例为节选：`uiFact` / `memoryFact` / `persistFact` 等辅助函数与 `FEED_PAGE_SIZE` 常量定义见 [Scenarios.kt](../demo-android/e2e/src/main/kotlin/dev/handeye/demo/e2e/scenarios/Scenarios.kt) 源文件。）
+
 要点：
 
 - `ctx = feedContext(baseUrl)`——每个 page 有自己的 context 工厂：组装 `HttpDispatcher`（POST `/cmd`）、各源 `HttpFactSource`（`/source?name=<源>` + 投影函数）、`HttpEventsFetcher`（`/events`），以及批跑状态隔离用的 `baselineReset`。见 [FeedContext.kt](../demo-android/e2e/src/main/kotlin/dev/handeye/demo/e2e/FeedContext.kt)。
@@ -185,7 +187,7 @@ val feedScenarios: List<ScenarioMeta> = listOf(
 - **media 按属性反查**：scenario 用 `FixtureNeed.media(constraints)` 声明属性要求（不点名素材），`--print-bootstrap-plan` 阶段由 orchestrator 反查 `media` 数组第一个满足 `attrs` 的条目，无满足则早报。当前语义：`minDurationMs`（常量 `FixtureNeed.MIN_DURATION_MS`）按下界（实际 ≥ 要求），其余 key 等值；素材缺某 key = 不满足（被排除）。
 - **布尔能力属性要带显式约束**：当业务只依赖素材的某个布尔能力时（常量 `FixtureNeed.SUPPORTS_SPEED`，区分视频类素材 `"true"` 与图片类 `"false"`），声明约束必须带上它，否则反查可能选中不满足能力的素材，scenario 在真机上才炸。
 - **点选已存工程状态**：除文件素材外，`FixtureNeed` 还支持按稳定 key 点选一份预先保存好的工程状态（`FixtureNeed.draft("<key>")`），不进属性反查（工程状态与文件素材属性是不同维度）。本机用 `e2e.local.json` 的 `.drafts.<key>` 存映射。
-- 路径前缀（Android `files/` 根、iOS `Documents/` 根）由平台 bootstrap 脚本拼 `device_path` 相对段，orchestrator 不感知。素材两级兜底（设备上已存在 → 跳过；不存在 → 从 host 推送）在 `scripts/fetch_media.sh`（Android `adb push`）与 `scripts/bootstrap_ios.sh`（iOS afcclient）内。
+- 路径前缀（Android `files/` 根、iOS `Documents/` 根）由平台 bootstrap 脚本拼 `device_path` 相对段，orchestrator 不感知。注意 iOS 实际落盘为 `Documents/handeye/media/<文件名>`——只保留 `device_path` 的 basename、丢弃目录段（见 [device-ios/docs/bootstrap-contract.md](../device-ios/docs/bootstrap-contract.md) §1）；Android 按完整相对段落盘。素材两级兜底（设备上已存在 → 跳过；不存在 → 从 host 推送）在 `scripts/fetch_media.sh`（Android `adb push`）与 `scripts/bootstrap_ios.sh`（iOS afcclient）内。
 - 接新平台时按平台补 bootstrap 脚本与装配逻辑，业务侧代码不感知平台差异。
 
 ## 五、验证清单（上 PR 前自检）
