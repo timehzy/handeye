@@ -21,8 +21,8 @@
 # 退出码:
 #   0  成功（build+install 完成 / APK 新鲜跳过安装 / --skip-build --skip-install 直接返回）
 #   2  参数错误
-#   3  配置缺失（load_config 校验 APP_ID / HANDEYE_DEEPLINK_SCHEME）
-#   4  前置依赖缺失（adb / curl / jq / gradlew，或无可用设备）
+#   4  前置缺失：依赖工具（adb / curl / jq / gradlew）、无可用设备，或配置缺失
+#      （load_config 的 require_vars 校验 APP_ID / HANDEYE_DEEPLINK_SCHEME 失败）
 #   5  gradle build 失败或 build 后找不到 APK 产物
 #   6  adb install 失败
 #   钩子（pre/post build/install）失败时：脚本以钩子自身的退出码终止（run_hook 不吞错）

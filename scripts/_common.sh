@@ -40,14 +40,15 @@ require_tools() {
 }
 
 # 必填变量检查：列出每个缺失变量的名字与设置途径（环境变量或 handeye.local.sh），
-# 避免 bash 直接抛 unbound variable 让人摸不着头脑。全部缺失项列出后 exit 3。
+# 避免 bash 直接抛 unbound variable 让人摸不着头脑。全部缺失项列出后 exit 4
+# （与 require_tools 的「前置缺失」同码：配置缺失属于前置缺失）。
 # 用法: require_vars "APP_ID" "HANDEYE_DEEPLINK_SCHEME"
 require_vars() {
   local missing=0 v
   for v in "$@"; do
     [ -n "${!v:-}" ] || { printf '缺少配置 %s（用环境变量或 scripts/handeye.local.sh 设置）\n' "$v" >&2; missing=1; }
   done
-  [ "$missing" -eq 0 ] || exit 3
+  [ "$missing" -eq 0 ] || exit 4
 }
 
 # 等 App 进程出现，返回 pid（stdout）。40 次 × 0.5s = 20s 超时返回 1。
