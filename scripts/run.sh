@@ -160,6 +160,10 @@ preflight() {
   [ -x "$HANDEYE_ROOT/gradlew" ] || die "gradlew 不可执行：$HANDEYE_ROOT/gradlew（chmod +x gradlew）" 4
   # load_config / resolve_device 缺配置 / 无设备时各自 exit 4（前置缺失）
   load_config
+  # 桥接三级配置到 orchestrator catalog 解析：orchestrator 只认 HANDEYE_FIXTURES_JSON
+  # 环境变量（BootstrapPlanCli.defaultCatalogJson），FIXTURES_JSON 已被 load_config
+  # 归一为绝对路径——plan 拉取与场景跑批的 gradle 调用都靠这次 export 带上 catalog
+  export HANDEYE_FIXTURES_JSON="$FIXTURES_JSON"
   resolve_device "$SERIAL"
   # 与 _common.sh 约定一致：$ADB 故意不加引号，分词成 "adb -s <serial>"
   export ANDROID_SERIAL="$SERIAL"

@@ -68,7 +68,7 @@ object BootstrapPlanCli {
             } catch (e: FixtureCatalogValidator.CatalogMissingException) {
                 System.err.println("错误: ${e.message}")
                 if (scenarios.any { it.fixture is MediaNeed }) {
-                    System.err.println("本批次含 MediaNeed 场景，缺少 catalog 无法反查素材（检查 MVI_E2E_FIXTURES_JSON 或 fixtures 目录）")
+                    System.err.println("本批次含 MediaNeed 场景，缺少 catalog 无法反查素材（检查 HANDEYE_FIXTURES_JSON 或 fixtures 目录）")
                     return 2
                 }
                 System.err.println("本批次无 MediaNeed 场景，跳过素材反查")
@@ -109,12 +109,12 @@ object BootstrapPlanCli {
     }
 
     /**
-     * 解析 fixtures catalog 路径：`MVI_E2E_FIXTURES_JSON` > `e2e.local.json`（本机覆盖）>
+     * 解析 fixtures catalog 路径：`HANDEYE_FIXTURES_JSON` > `e2e.local.json`（本机覆盖）>
      * `e2e.example.json`（模板回退）。相对候选覆盖 working dir 在 `insedit/` 根或
      * `e2e-scenarios/` 子项目两种 gradle run 布局；本机 catalog 存在时优先用本机值。
      */
     private fun defaultCatalogJson(): File {
-        val env = System.getenv("MVI_E2E_FIXTURES_JSON")
+        val env = System.getenv("HANDEYE_FIXTURES_JSON")
         if (!env.isNullOrBlank()) return File(env)
         val candidates = listOf(
             "e2e-scenarios/fixtures/e2e.local.json",
