@@ -346,7 +346,7 @@ check_integration() {
 }
 
 # ---- [1/3] 拉 bootstrap plan ----
-# 契约行：name<TAB>page<TAB>source<TAB>host_path<TAB>smb_path（详见 BootstrapPlanCli）。
+# 契约行：name<TAB>page<TAB>source<TAB>host_path（四列，详见 BootstrapPlanCli）。
 # 同时承担 scenario/tag 合法性校验（未注册在这里就报错，不等跑批）。
 
 gradle_plan() { # $1 = selector 串（如 "--all" / "--tag smoke" / "select_ratio"）
@@ -386,7 +386,7 @@ GROUP_KEYS=""
 GROUP_MEMBERS=""
 GROUP_HOSTS=""
 
-# 从 plan 文本（$1，每行 name<TAB>page<TAB>source<TAB>host<TAB>smb）构建分组。
+# 从 plan 文本（$1，每行 name<TAB>page<TAB>source<TAB>host）构建分组。
 # 只消费契约行（防 gradle/JVM 警告混入 stdout 污染解析）。
 # GROUP_HOSTS 与 GROUP_KEYS 平行（行号即组号）：host（第 4 列，host 侧素材绝对路径，可空）
 # 取同 key 首现行的值——source 才是分组键，契约上同 (page, source) 组的 host 应一致，
@@ -537,7 +537,8 @@ ensure_bootstrap_demo() { # $1 = source（plan source 列：设备沙盒相对�
   return 0
 }
 
-# page 分发。上游还有 story 页；本仓 demo 场景全在 demo 页，其它页早报失败不影响其它组。
+# page 分发。v1 仅 demo 页落地：plan 过滤只放行 demo 行，未知页进不了组；
+# 此处 * 分支仅防御绕过过滤的直调（如单测手工构造 plan）。
 ensure_bootstrap() { # $1 = page, $2 = source, $3 = host_path（plan host 列，可空）
   local page="$1" source="$2" host_path="${3:-}"
   local key="$page$TAB$source"
@@ -774,7 +775,7 @@ main() {
   # [1/3] plan
   fetch_plan
   local plan_lines
-  plan_lines=$(printf '%s\n' "$PLAN_OUT" | grep -E "^[A-Za-z0-9_]+${TAB}(demo|story)${TAB}" || true)
+  plan_lines=$(printf '%s\n' "$PLAN_OUT" | grep -E "^[A-Za-z0-9_]+${TAB}demo${TAB}" || true)
   if [ -z "$plan_lines" ]; then
     die "bootstrap plan 为空（selector 未命中任何场景）" 2
   fi
@@ -866,8 +867,8 @@ main() {
 # ensure_bootstrap_demo 接线（stub bootstrap_android.sh 验证参数透传 + 契约行解析 + 复用态）。
 selftest() {
   local fixture plan logf out_file fake_dir old_path old_tail i
-  # 契约行：name<TAB>page<TAB>source<TAB>host<TAB>smb（host/smb 段可空，空段不能错位）
-  fixture=$(printf 'alpha\tdemo\t\te2e_media/a.mp4\t\nbeta\tdemo\t\te2e_media/a.mp4\t\ngamma\tstory\te2e_media/s.mp4\tx/y.mp4\tz/w.mp4\ndelta\tdemo\t\te2e_media/a.mp4\t\nepsilon\tstory\te2e_media/s.mp4\tx/y.mp4\tz/w.mp4')
+  # 契约行：name<TAB>page<TAB>source<TAB>host（host 段可空，空段不能错位）
+  fixture=$(printf 'alpha\tdemo\t\te2e_media/a.mp4\nbeta\tdemo\t\te2e_media/a.mp4\ngamma\tother\te2e_media/s.mp4\tx/y.mp4\ndelta\tdemo\t\te2e_media/a.mp4\nepsilon\tother\te2e_media/s.mp4\tx/y.mp4')
 
   build_groups "$fixture"
   [ "$(group_count)" -eq 2 ] || { echo "SELFTEST FAIL: 组数 $(group_count) != 2" >&2; return 1; }
@@ -878,14 +879,14 @@ selftest() {
   [ "$(group_members 1)" = "alpha,beta,delta" ] || { echo "SELFTEST FAIL: 组1 members '$(group_members 1)'" >&2; return 1; }
   [ "$(group_host 1)" = "e2e_media/a.mp4" ] || { echo "SELFTEST FAIL: 组1 host '$(group_host 1)'" >&2; return 1; }
   case "$(group_key 2)" in
-    "story${TAB}e2e_media/s.mp4") : ;;
+    "other${TAB}e2e_media/s.mp4") : ;;
     *) echo "SELFTEST FAIL: 组2 key '$(group_key 2)'" >&2; return 1 ;;
   esac
   [ "$(group_members 2)" = "gamma,epsilon" ] || { echo "SELFTEST FAIL: 组2 members '$(group_members 2)'" >&2; return 1; }
   [ "$(group_host 2)" = "x/y.mp4" ] || { echo "SELFTEST FAIL: 组2 host '$(group_host 2)'" >&2; return 1; }
 
-  # source 列含空 host/smb 段时分组不错位；key 首现顺序稳定
-  plan=$(printf 'one\tdemo\t\th1\ts1\ntwo\tdemo\t\th2\ts2\nthree\tstory\ts\th\ts')
+  # source 列含空 host 段时分组不错位；key 首现顺序稳定
+  plan=$(printf 'one\tdemo\t\th1\ntwo\tdemo\t\th2\nthree\tother\ts\th')
   build_groups "$plan"
   [ "$(group_count)" -eq 2 ] || { echo "SELFTEST FAIL: 空 source 聚合失败（组数 $(group_count)）" >&2; return 1; }
   [ "$(group_members 1)" = "one,two" ] || { echo "SELFTEST FAIL: 组1 members '$(group_members 1)'" >&2; return 1; }
