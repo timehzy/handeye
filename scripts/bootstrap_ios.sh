@@ -65,7 +65,7 @@
 #   5  素材 push 失败（afcclient push 失败 / 设备无素材且未给 --media-host）
 #   6  写配置失败（afcclient 推 handeye_bootstrap.json 失败；iOS 侧 deeplink 注入等价物）
 #   7  冷启动重拉失败（devicectl launch 失败 / --no-relaunch 但进程不在）
-#   8  进态超时（30s 内 /source?name=bootstrap 仍非 null 未达成）
+#   8  进态超时（30s 内 /source?name=bootstrap 仍为 null，未达成进态）
 #   9  xcodebuild 失败（build_install_ios.sh 透传）
 #   10 devicectl install 失败（build_install_ios.sh 透传）
 #
@@ -495,7 +495,7 @@ wait_ready() {
     waited=$((waited + STATE_POLL_INTERVAL_SEC))
   done
 
-  printf '错误: 进态超时（%ss 内 /source?name=bootstrap 仍非 null 未达成）\n' "$STATE_POLL_TIMEOUT_SEC" >&2
+  printf '错误: 进态超时（%ss 内 /source?name=bootstrap 仍为 null，未达成进态）\n' "$STATE_POLL_TIMEOUT_SEC" >&2
   printf '  最后响应: %s\n' "${last_src:-（无响应）}" >&2
   printf '  排查指引:\n' >&2
   printf '    1. 拉容器配置校验 JSON 合法: printf %%s\\n "get Documents/%s" quit | afcclient --container %s -u %s\n' \
