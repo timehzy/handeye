@@ -2,8 +2,9 @@
 # handeye e2e 总控入口（v1 · Android 全链路）
 #
 # 流程：拉 bootstrap plan（scenario → page/source）→ 按 (page,source) 稳定分组 →
-#       逐组 bootstrap（含 APK 新鲜度，build/install 委托 build_install_android.sh）→
-#       setup_android.sh 建 adb forward + /health 探测 → 分组跑 orchestrator → 汇总表收尾。
+#       逐组 bootstrap（委托 bootstrap_android.sh：build/install + 冷启动 + deeplink 进态 +
+#       建隧道，输出 HANDEYE_HOST_PORT 契约行）→ setup 复用 bootstrap 的隧道（/health 兜底重探）→
+#       分组跑 orchestrator → 汇总表收尾。
 #
 # 用法:
 #   ./run.sh --scenario <name> [--platform android] [--serial <s>] [--host-port <p>] [--force-reinstall] [-i] [--tail-events]
@@ -28,7 +29,9 @@
 #   -h, --help           显示本帮助
 #
 # 子命令:
-#   --check-integration  只做集成前置自检（工具 / JDK / 配置 / 设备 / App 安装与进程），不跑场景
+#   --check-integration  软诊断：有效配置与三级来源 / 工具链 / Manifest deeplink scheme /
+#                        App 安装态与进程 / iOS Podfile 本地依赖，逐项 [ok]/[warn]/[info] 报告，
+#                        只提示不阻断（exit 恒 0；配置缺失 / java 缺失按前置缺失 exit 4）
 #   snapshot diff <a.json> <b.json>
 #                        对比两份 snapshot——纯 host 侧工具，不需要设备 / adb forward，
 #                        直接把参数透传给 orchestrator（:demo-android:e2e:run）。
@@ -38,19 +41,20 @@
 #   page<TAB>source，同 key 直接跳过）、FRESHNESS_JUDGED / INSTALL_FLAGS（新鲜度只判定一次、
 #   结论复用——实际判定在 build_install_android.sh 内部完成，首组传空 flags 让其内判，
 #   成功后置 "--skip-build --skip-install"，后续组只重启不重装）。
-#   page=demo（demo 单页）本期 fast-path = build_install_android.sh + am start + 端口反查
-#   （setup_android.sh 承担）。N2 Task 9 落地 bootstrap_android.sh 后切过去——见
-#   ensure_bootstrap_demo() 内注释（上游同名段叫 ensure_bootstrap_main）。
-#   source 非空 → fetch_media.sh 素材兜底（Task 14）未落地，warn 并判本组失败、指路 fixtures README，
-#   不影响其它组。注意：demo 场景当前声明了空约束素材需求（FixtureNeed.media()），catalog
-#   配好后 plan 会反查出非空 source——素材兜底（或场景素材声明裁剪）落地前，含素材组只会跳过。
+#   page=demo：bootstrap 整体委托 bootstrap_android.sh（N2 已落地，替代 v1 内联
+#   build+am-start fast-path）——build/install、冷启动、deeplink 进态、建隧道都归它；
+#   组素材 source 列以 --media-path 透传（多素材 | 连接与其 split_pipe 语义一致，plan 反查
+#   已保证相对段合法），设备已有素材即跳过 push，缺素材时它以 exit 5 清晰早报。
+#   source 列含 host/smb 段的 fetch_media 自动拉取（Task 14）落地前，缺素材的组会判失败，
+#   不影响其它组。
 #
 # 前置:
 #   - Android device 已连接（adb devices 可见），debug 变体 App 可启动
 #   - JDK 17（缺时 macOS: /usr/libexec/java_home -v 17 查看已装版本；或 brew install openjdk@17）
 #
 # 退出码:
-#   0  全部场景通过；或 -i 模式下用户键入 q 主动退出；--check-integration 全项通过
+#   0  全部场景通过；或 -i 模式下用户键入 q 主动退出；--check-integration 诊断完成
+#      （软诊断：任一项缺失也只报告不阻断，exit 恒 0——配置缺失 / java 缺失例外，exit 4）
 #   1  任一场景失败 / 任一组 bootstrap 失败（其余组照跑，末尾汇总）
 #   2  参数错误（含 scenario/tag 未注册——plan 阶段即报出）
 #   3  setup 阶段失败（adb forward / 端口反查 / /health 未就绪；与 1 并存时优先 1）
@@ -175,31 +179,151 @@ preflight() {
   fi
 }
 
-# ---- --check-integration：只做自检，不跑场景 ----
+# ---- --check-integration：软诊断，只报告不阻断 ----
+# spec §5.1：「软前置」的可选诊断——exit 恒 0（adb 缺失 / App 未装 / scheme 未注册都只打
+# [warn]/[info]），例外只有两个硬前置：配置缺失（load_config 的 require_vars）与 java 缺失
+# （工具链），按既有约定 exit 4。adb 缺失不判 exit 4——诊断的意义就在于环境不全时也能
+# 把能查的都查了（Manifest scheme 是纯离线的，不依赖设备）。
 
-check_integration() {
-  [ "$PLATFORM" = "android" ] || die "--check-integration 暂仅支持 android（iOS 链路未落地）" 2
-  log "check-integration（android）：逐项自检，全过 exit 0，任一项缺失 exit 4"
-  preflight
-  local ok=1 apk_path pid
-  # App 是否已安装
+ci_ok()   { printf '[ok]   %s\n' "$*"; }
+ci_warn() { printf '[warn] %s\n' "$*" >&2; }
+ci_info() { printf '[info] %s\n' "$*"; }
+
+# 配置来源归因（三级：env = 环境变量 > local = handeye.local.sh > example = 默认值）。
+# load_config 之后所有变量必有值，归因靠回溯三个来源：先看真实环境变量，再 grep
+# local.sh 是否有该变量的赋值行（兼容 `VAR=x` 与 `: "${VAR:=x}"` 两种写法），都不是
+# 即 example 默认。local.sh 里被注释掉的行不算（行首 # 排除）。
+config_source() { # $1 = 变量名 → stdout: env / local / example
+  local var="$1" local_file="$HANDEYE_ROOT/scripts/handeye.local.sh"
+  if printenv "$var" >/dev/null 2>&1; then printf 'env'; return; fi
+  if [ -f "$local_file" ] && grep -q "^[^#]*${var}=" "$local_file"; then printf 'local'; return; fi
+  printf 'example'
+}
+
+# 打印解析后的有效配置，逐项标注三级来源。
+print_effective_config() {
+  local var src
+  ci_info "有效配置（来源标注：[env]=环境变量 > [local]=handeye.local.sh > [example]=默认值）"
+  for var in APP_ID HANDEYE_DEEPLINK_SCHEME ANDROID_GRADLE_TASK ANDROID_MAIN_ACTIVITY \
+             ANDROID_SERIAL IOS_PROJECT_DIR IOS_SCHEME FIXTURES_JSON; do
+    src=$(config_source "$var")
+    printf '    [%-7s] %-22s = %s\n' "$src" "$var" "${!var:-<空>}"
+  done
+}
+
+# 在 $ANDROID_HOME/build-tools（未设则回退常见 SDK 安装路径）下探测 aapt，取版本号最新的。
+find_aapt() {
+  local d best=""
+  for d in $( { [ -n "${ANDROID_HOME:-}" ] && ls -d "$ANDROID_HOME/build-tools"/*; \
+                ls -d "$HOME/Library/Android/sdk/build-tools"/* \
+                     "$HOME/Android/Sdk/build-tools"/*; } 2>/dev/null | sort -V ); do
+    if [ -z "$best" ] && [ -x "$d/aapt" ]; then best="$d/aapt"; fi
+  done
+  [ -n "$best" ] && printf '%s' "$best"
+}
+
+# Android 集成态：Manifest deeplink scheme（aapt 离线探测）+ 安装态 + 进程存活。
+# adb 不可用（不在 PATH / 无在线设备）时逐项降级为 [warn]/[info] 跳过，不影响 exit 0。
+ci_android() {
+  local apk aapt dump
+  # Manifest scheme 探测：badging 不输出 intent-filter（实测 build-tools 36.x），badging
+  # 里没有 scheme 行时回退 xmltree 全量 manifest；xmltree 里 label 可能含 scheme 字符串，
+  # 只认 android:scheme 属性行，避免「handeye demo」这类误报。
+  apk=$(ls -t $HANDEYE_ROOT/$ANDROID_APK_GLOB 2>/dev/null | head -1)
+  if [ -z "$apk" ]; then
+    ci_info "未找到已构建 APK（$ANDROID_APK_GLOB），跳过 deeplink scheme 检查（先跑一次 build）"
+  elif ! aapt=$(find_aapt); then
+    ci_info "跳过 scheme 检查（未找到 aapt；安装 Android SDK build-tools 或设置 ANDROID_HOME）"
+  else
+    dump=$("$aapt" dump badging "$apk" 2>/dev/null | grep -i "scheme" || true)
+    if [ -z "$dump" ]; then
+      # xmltree 全量 manifest：label 可能含 scheme 字符串，只认 android:scheme 属性行
+      dump=$("$aapt" dump xmltree "$apk" AndroidManifest.xml 2>/dev/null | grep "android:scheme" || true)
+    fi
+    if printf '%s' "$dump" | grep -qF -- "$HANDEYE_DEEPLINK_SCHEME"; then
+      ci_ok "Manifest 已注册 deeplink intent-filter（scheme: $HANDEYE_DEEPLINK_SCHEME）· $apk"
+    else
+      ci_warn "Manifest 未注册 deeplink intent-filter（scheme: $HANDEYE_DEEPLINK_SCHEME），见 docs/integration-points.md"
+    fi
+  fi
+
+  # 安装态 + 进程存活（需要 adb 与在线设备；诊断模式不复用 resolve_device——它无设备时
+  # die exit 4，与「软诊断不阻断」矛盾，这里自行做软设备选择）
+  if ! command -v adb >/dev/null 2>&1; then
+    ci_warn "adb 不在 PATH（安装 Android SDK platform-tools），跳过设备 / 安装态 / 进程检查"
+    return 0
+  fi
+  local devices sel="" apk_path pid
+  devices=$(adb devices | awk 'NR>1 && $2=="device" {print $1}')
+  if [ -z "$devices" ]; then
+    ci_warn "adb devices 无在线设备，跳过安装态 / 进程检查（连机后重跑本诊断）"
+    return 0
+  fi
+  if [ -n "$SERIAL" ]; then sel="$SERIAL"
+  elif [ -n "${ANDROID_SERIAL:-}" ]; then sel="$ANDROID_SERIAL"
+  else
+    sel=$(printf '%s\n' "$devices" | head -1)
+    if [ "$(printf '%s\n' "$devices" | grep -c .)" -gt 1 ]; then
+      ci_warn "检测到多台在线设备且未指定（--serial / ANDROID_SERIAL），诊断用第一台: $sel"
+    fi
+  fi
+  ADB="adb ${sel:+-s $sel}"
+  ci_ok "目标设备: $sel"
+
   apk_path=$($ADB shell pm path "$APP_ID" 2>/dev/null | head -1 | tr -d '\r')
   if [ -z "$apk_path" ]; then
-    printf '✗ App 未安装: %s（先跑 %s/build_install_android.sh）\n' "$APP_ID" "$SCRIPT_DIR" >&2
-    ok=0
+    ci_warn "App 未安装: $APP_ID（bootstrap 阶段会自动 build+install，或先跑 $SCRIPT_DIR/build_install_android.sh）"
   else
-    printf '✓ App 已安装: %s（%s）\n' "$APP_ID" "$apk_path"
+    ci_ok "App 已安装: $APP_ID（${apk_path}）"
   fi
-  # App 进程是否存活（debug server 前提是装配器 install 成功，进程在是最基础的信号）
   pid=$($ADB shell pidof "$APP_ID" 2>/dev/null | tr -d '\r' | head -1)
   if [ -z "$pid" ]; then
-    printf '✗ App 进程未存活（先启动 App 到主页面）\n' >&2
-    ok=0
+    ci_info "App 进程未存活（bootstrap 冷启动会拉起，非问题）"
   else
-    printf '✓ App 进程存活: pid=%s\n' "$pid"
+    ci_ok "App 进程存活: pid=$pid"
   fi
-  [ "$ok" -eq 1 ] || exit 4
-  log "集成前置自检全部通过（隧道 /health 就绪与否由 setup 阶段在建批时确认）"
+}
+
+# iOS 集成态：Podfile 本地 framework 依赖（:path pod）。AppDelegate/SceneDelegate 是否读取
+# handeye_bootstrap.json 不做代码扫描（太侵入），指路文档。
+ci_ios() {
+  local dir="$IOS_PROJECT_DIR" podfile
+  case "$dir" in /*) ;; *) dir="$HANDEYE_ROOT/$dir" ;; esac
+  podfile="$dir/Podfile"
+  if [ ! -d "$dir" ]; then
+    ci_warn "IOS_PROJECT_DIR 不存在: $dir（iOS 接入方式见 docs/integration-points.md）"
+  elif [ ! -f "$podfile" ]; then
+    ci_info "未找到 Podfile: $podfile（非 CocoaPods 工程？iOS 接入方式见 docs/integration-points.md）"
+  elif grep -q ":path" "$podfile"; then
+    ci_ok "Podfile 检测到本地 framework 依赖（:path pod）: $podfile"
+  else
+    ci_warn "Podfile 未检测到本地 framework 依赖；若走 KMP framework 接入，参考 docs/samples/ios-podfile-local.rb"
+  fi
+  ci_info "AppDelegate / SceneDelegate 是否读取 handeye_bootstrap.json 不做代码扫描，接入点见 docs/integration-points.md"
+}
+
+check_integration() {
+  log "check-integration（$PLATFORM）：软诊断逐项报告，不阻断执行"
+  # 硬前置例外 1：配置缺失（load_config → require_vars 失败 exit 4）
+  load_config
+  # 硬前置例外 2：java 缺失（工具链；版本非 17 只警告，check_jdk 内已处理）
+  if ! command -v java >/dev/null 2>&1; then
+    printf '缺少 java（JDK 17 — macOS 查看已装: /usr/libexec/java_home -v 17；安装: brew install openjdk@17）\n' >&2
+    exit 4
+  fi
+  check_jdk
+
+  print_effective_config
+  if [ "$PLATFORM" = "android" ]; then
+    # adb / curl / jq 缺失只降级为提示（软诊断），不阻断
+    command -v curl >/dev/null 2>&1 || ci_warn "curl 不在 PATH（macOS 自带，PATH 异常？）"
+    command -v jq   >/dev/null 2>&1 || ci_warn "jq 不在 PATH（brew install jq）"
+    ci_android
+  else
+    ci_ios
+  fi
+  log "以上均为提示，不阻断执行"
+  exit 0
 }
 
 # ---- [1/3] 拉 bootstrap plan ----
@@ -289,22 +413,13 @@ INSTALL_FLAGS=""
 ADB=""
 SERIAL=""
 
-# page=demo fast-path bootstrap（上游 ensure_bootstrap_main 对应段）。
-# 本期 = build_install_android.sh（含新鲜度）+ am start 拉起 + 端口反查（setup 阶段做）。
-# N2 Task 9 落地 bootstrap_android.sh 后，本函数切为单一调用：
-#   "$SCRIPT_DIR/bootstrap_android.sh" $INSTALL_FLAGS [--source ...]
-# 素材/换页/草稿的细粒度判定都归那个脚本，run.sh 不再内联 am start。
-ensure_bootstrap_demo() { # $1 = source（demo 场景实际恒为空）
+# page=demo bootstrap：整体委托 bootstrap_android.sh（N2 已落地，替代 v1 内联
+# build+am-start fast-path）。素材/换页/草稿的细粒度判定、冷启动、deeplink 注入、
+# 端口隧道都归那个脚本；run.sh 只传开关、解析契约行、维护 INSTALL_FLAGS 复用态。
+# 上游 ensure_bootstrap_main 对应段。
+ensure_bootstrap_demo() { # $1 = source（plan source 列：沙盒相对段，多素材 | 连接，可空）
   local source="$1"
-
-  # source 非空 = 该组声明了素材需求；素材兜底 fetch_media.sh（Task 14）未落地，
-  # 早报失败指路，不影响其它组。demo 场景虽用空约束素材声明，catalog 配好后仍会
-  # 反查出非空 source 走到这里——素材兜底落地前这类组只能跳过。
-  if [ -n "$source" ]; then
-    warn "组声明了素材 source=$source，但素材兜底 fetch_media.sh 未落地（Task 14）"
-    warn "见 fixtures/README.md 配置素材后重试；本组跳过"
-    return 1
-  fi
+  local args=() out rc=0 hp
 
   # 新鲜度只判定一次、结论复用：首组把判定交给 build_install_android.sh 内部
   # （FORCE_REINSTALL 经环境变量透传，--force-reinstall 语义一致）；
@@ -313,20 +428,49 @@ ensure_bootstrap_demo() { # $1 = source（demo 场景实际恒为空）
     INSTALL_FLAGS=""
   fi
 
-  log "bootstrap（demo fast-path）: build_install_android.sh $INSTALL_FLAGS"
+  # 组素材需求透传 --media-path（plan source 列与 bootstrap split_pipe 语义一致：多素材
+  # | 连接；plan 反查阶段已校验相对段合法性）。设备已有素材时 bootstrap 内部跳过 push，
+  # 缺素材且 fetch_media.sh（Task 14）未落地时它以 exit 5 清晰早报（本组判失败，不影响其它组）。
+  [ -z "$source" ] || args+=("--media-path" "$source")
+  # 多机时必须把选中的设备传下去（bootstrap 内部 resolve_device 同理，双保险）。
+  # 用 || 而非 && 短路：SERIAL 为空时整条 && 列表返回非零，在 set -e 函数体内会误杀脚本
+  [ -z "$SERIAL" ] || args+=("-s" "$SERIAL")
+
+  log "bootstrap: bootstrap_android.sh $INSTALL_FLAGS ${args[*]:-}"
   # $INSTALL_FLAGS 是脚本内构造的受控 token（空 / "--skip-build --skip-install"），需词分割展开
   # shellcheck disable=SC2086
-  if ! "$SCRIPT_DIR/build_install_android.sh" $INSTALL_FLAGS; then
-    warn "本组 bootstrap 失败（page=demo），跳过该组场景"
+  out=$("$SCRIPT_DIR/bootstrap_android.sh" $INSTALL_FLAGS ${args[@]+"${args[@]}"}) || rc=$?
+  printf '%s\n' "$out"
+  if [ "$rc" -ne 0 ]; then
+    warn "bootstrap_android.sh 退出码 $rc（page=demo），本组跳过"
+    case "$rc" in
+      3) warn "setup 阶段失败（隧道形式化）" ;;
+      4) warn "前置缺失 / debug server 端口反查失败" ;;
+      5) warn "素材 push 失败：设备沙盒缺素材且 fetch_media.sh 未落地（Task 14）；先把素材放到设备或配好 catalog 源路径" ;;
+      6) warn "deeplink 注入失败：Manifest 是否注册了 \$HANDEYE_DEEPLINK_SCHEME intent-filter？见 docs/integration-points.md" ;;
+      7) warn "冷启动失败或秒崩（am start 失败 / 20s 内进程未出现）" ;;
+      8) warn "进态超时（Track A/B 均未通过）" ;;
+    esac
     return 1
   fi
 
-  # 拉起 App 到主页面（冷启动进态 deeplink 归 N2 bootstrap_android.sh，v1 直接起主 Activity）
-  log "启动 App: $ADB shell am start -n $APP_ID/$ANDROID_MAIN_ACTIVITY"
-  $ADB shell am start -n "$APP_ID/$ANDROID_MAIN_ACTIVITY" >/dev/null 2>&1 || true
-  if ! wait_app_pid >/dev/null; then
-    warn "App 启动后 20s 内进程未出现（$APP_ID），本组跳过"
+  # 解析契约行 HANDEYE_HOST_PORT。bootstrap 已把隧道形式化（含 /health 探测），其契约即
+  # 本组隧道真相源——setup 阶段（ensure_setup_and_health）见 SETUP_DONE=1 直接复用，不再
+  # 二次 setup；仅 /health 重探失败时才走 do_setup 重建（App 换端口重启的兜底路径）。
+  hp=$(printf '%s\n' "$out" | grep -E '^HANDEYE_HOST_PORT=' | tail -1 | cut -d= -f2)
+  if [ -z "$hp" ]; then
+    warn "bootstrap 输出缺少 HANDEYE_HOST_PORT 契约行，无法确定本组 BASE_URL"
     return 1
+  fi
+  if [ -n "$USER_HOST_PORT" ]; then
+    # --host-port：隧道归用户管。bootstrap 自建隧道仅作它的注入通道，跑批仍探用户端口；
+    # 不动 HOST_PORT/FORWARD_CREATED（cleanup 不应去拆用户建的 forward）
+    log "bootstrap 契约端口 $hp；--host-port 已指定，跑批仍用用户隧道 tcp:$USER_HOST_PORT"
+  else
+    HOST_PORT="$hp"
+    BASE_URL="http://127.0.0.1:$HOST_PORT"
+    FORWARD_CREATED=1
+    SETUP_DONE=1
   fi
 
   # 本 run 已成功 build+install（或确认新鲜）——后续组一律跳过重装
@@ -654,7 +798,8 @@ main() {
 }
 
 # ---- 自检（隐藏入口，供无设备环境验证纯 host 逻辑） ----
-# HANDEYE_SELFTEST=1 ./run.sh —— fixture 驱动：分组解析 / 汇总结果回填 / events tailer。
+# HANDEYE_SELFTEST=1 ./run.sh —— fixture 驱动：分组解析 / 汇总结果回填 / events tailer /
+# ensure_bootstrap_demo 接线（stub bootstrap_android.sh 验证参数透传 + 契约行解析 + 复用态）。
 selftest() {
   local fixture plan logf out_file fake_dir old_path old_tail i
   # 契约行：name<TAB>page<TAB>source<TAB>host<TAB>smb（host/smb 段可空，空段不能错位）
@@ -719,6 +864,64 @@ selftest() {
   grep -q '^\[tail seq=2 t=200\] kind=k2 raw=' "$out_file" \
     || { echo "SELFTEST FAIL: tailer 输出缺失（$(cat "$out_file")）" >&2; rm -f "$out_file"; return 1; }
   rm -f "$out_file"
+
+  # ensure_bootstrap_demo 接线：stub bootstrap_android.sh 记录 argv、按 env 决定输出/退出码，
+  # 验证 ①source 透传 --media-path ②-s 透传 ③HANDEYE_HOST_PORT 契约行 → BASE_URL/SETUP_DONE
+  # ④INSTALL_FLAGS 复用态 ⑤非零退出 → 本组失败且不污染复用态 ⑥缺契约行 → 失败
+  local stub_dir old_script_dir
+  stub_dir=$(mktemp -d)
+  cat > "$stub_dir/bootstrap_android.sh" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$@" > "$STUB_ARGS_FILE"
+if [ "${STUB_RC:-0}" != "0" ]; then exit "$STUB_RC"; fi
+if [ -z "${STUB_NO_CONTRACT:-}" ]; then
+  echo "HANDEYE_HOST_PORT=40321"
+  echo "HANDEYE_DEVICE_PORT=40321"
+fi
+STUB
+  chmod +x "$stub_dir/bootstrap_android.sh"
+  old_script_dir=$SCRIPT_DIR
+  SCRIPT_DIR="$stub_dir"
+  export STUB_ARGS_FILE="$stub_dir/args1"
+  # 复位 ensure_bootstrap_demo 消费的全局态（局部于本自检进程，无跨进程影响）
+  FRESHNESS_JUDGED=0; INSTALL_FLAGS=""; LAST_BOOTSTRAP_KEY=""
+  SERIAL="TESTSERIAL"; USER_HOST_PORT=""
+  HOST_PORT=""; BASE_URL=""; FORWARD_CREATED=0; SETUP_DONE=0
+  ensure_bootstrap_demo "e2e_media/a.mp4|e2e_media/b.mp4" >/dev/null \
+    || { echo "SELFTEST FAIL: ensure_bootstrap_demo 成功路径返回非 0" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1; }
+  grep -qx -- "--media-path" "$stub_dir/args1" && grep -qx -- "e2e_media/a.mp4|e2e_media/b.mp4" "$stub_dir/args1" \
+    || { echo "SELFTEST FAIL: --media-path 透传丢失（$(cat "$stub_dir/args1")）" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1; }
+  grep -qx -- "-s" "$stub_dir/args1" && grep -qx -- "TESTSERIAL" "$stub_dir/args1" \
+    || { echo "SELFTEST FAIL: -s serial 透传丢失" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1; }
+  [ "$BASE_URL" = "http://127.0.0.1:40321" ] && [ "$HOST_PORT" = "40321" ] \
+    && [ "$SETUP_DONE" = "1" ] && [ "$FORWARD_CREATED" = "1" ] \
+    || { echo "SELFTEST FAIL: 契约行解析/BASE_URL/SETUP_DONE（base=$BASE_URL setup=$SETUP_DONE）" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1; }
+  [ "$INSTALL_FLAGS" = "--skip-build --skip-install" ] \
+    || { echo "SELFTEST FAIL: INSTALL_FLAGS 未置复用态（'$INSTALL_FLAGS'）" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1; }
+
+  # 失败路径：退出码 6 → 返回 1 且复用态不置位。SERIAL 置空走一遍，覆盖空 serial
+  # 分支（args 不加 -s；旧 && 写法在此场景会触发 set -e 误杀，回归防护）
+  export STUB_ARGS_FILE="$stub_dir/args2"; export STUB_RC=6; unset STUB_NO_CONTRACT || true
+  INSTALL_FLAGS=""; SERIAL=""
+  if ensure_bootstrap_demo "" >/dev/null 2>&1; then
+    echo "SELFTEST FAIL: bootstrap 失败路径应返回非 0" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1
+  fi
+  [ "$INSTALL_FLAGS" = "" ] \
+    || { echo "SELFTEST FAIL: 失败路径 INSTALL_FLAGS 被污染（'$INSTALL_FLAGS'）" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1; }
+  if grep -qx -- "-s" "$stub_dir/args2"; then
+    echo "SELFTEST FAIL: SERIAL 为空时不应透传 -s" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1
+  fi
+
+  # 缺契约行 → 失败（exit 0 但无 HANDEYE_HOST_PORT）
+  export STUB_ARGS_FILE="$stub_dir/args3"; export STUB_RC=0; export STUB_NO_CONTRACT=1
+  if ensure_bootstrap_demo "" >/dev/null 2>&1; then
+    echo "SELFTEST FAIL: 缺契约行应返回非 0" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1
+  fi
+  SCRIPT_DIR=$old_script_dir
+  rm -rf "$stub_dir"
+  FRESHNESS_JUDGED=0; INSTALL_FLAGS=""; LAST_BOOTSTRAP_KEY=""
+  SERIAL=""; USER_HOST_PORT=""
+  HOST_PORT=""; BASE_URL=""; FORWARD_CREATED=0; SETUP_DONE=0
 
   echo "SELFTEST OK"
   return 0
