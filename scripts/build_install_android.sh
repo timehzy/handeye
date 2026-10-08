@@ -25,10 +25,10 @@
 #   4  前置依赖缺失（adb / curl / jq / gradlew，或无可用设备）
 #   5  gradle build 失败或 build 后找不到 APK 产物
 #   6  adb install 失败
+#   钩子（pre/post build/install）失败时：脚本以钩子自身的退出码终止（run_hook 不吞错）
 set -eu
 
 . "$(dirname "$0")/_common.sh"
-load_config
 
 SKIP_BUILD=""
 SKIP_INSTALL=""
@@ -88,7 +88,9 @@ file_mtime() {
 }
 
 # 设备上已装 APK 的安装时间（epoch 秒）。取 base.apk 文件 mtime——adb install 落盘时间
-# 即 lastUpdateTime，且不受 dumpsys 输出格式/系统语言影响。拿不到（未安装/无权限）返回空。
+# 即 lastUpdateTime，且不受 dumpsys 输出格式/系统语言影响。split APK（App Bundle）场景
+# pm path 会输出多行，这里只取第一行 base.apk 的 mtime；当前单 APK install -r 流程无影响。
+# 拿不到（未安装/无权限）返回空。
 device_apk_install_ts() {
   local apk_path ts
   apk_path=$($ADB shell pm path "$APP_ID" 2>/dev/null | head -1 | sed 's/^package://' | tr -d '\r')
@@ -161,7 +163,8 @@ build_apk() {
 }
 
 # 按 $ANDROID_APK_GLOB 取最新 APK（ls 的 glob 故意不加引号，依赖词法展开）。
-# $1=模式（build / reuse），失败 exit 5。
+# $1=模式：build（gradle 构建后定位产物）/ reuse（--skip-build 复用已有 APK），失败 exit 5。
+# 副作用：成功后向 stdout emit 契约行 HANDEYE_APK_PATH=<path>（供 run.sh 消费）。
 locate_apk() {
   APK_PATH=$(ls -t $HANDEYE_ROOT/$ANDROID_APK_GLOB 2>/dev/null | head -1)
   if [ -z "$APK_PATH" ]; then
@@ -197,6 +200,10 @@ main() {
     exit 0
   fi
 
+  # 配置加载放在 -h / 双 skip 短路之后：打帮助和双 skip 不需要任何配置
+  load_config
+
+  # curl / jq 本脚本不直接调用，是契约要求的公共工具集（同族脚本共用一份前置检查），勿删
   require_tools "adb:Android SDK platform-tools" "curl:macOS 自带" "jq:brew install jq"
   if [ -z "$SKIP_BUILD" ] && [ ! -x "$HANDEYE_ROOT/gradlew" ]; then
     die "gradlew 不可执行：$HANDEYE_ROOT/gradlew（chmod +x gradlew）" 4
