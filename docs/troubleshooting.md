@@ -10,7 +10,7 @@
 | 现象 | 看哪 |
 |---|---|
 | `/health` 一直空返回 | iOS：坑 2（取错设备）；Android：坑 1（没进页、debug server 没起）或坑 7（进程崩了） |
-| bootstrap 脚本报退出码 6 / 8 | Android：坑 1（冷启动窗口不足）；iOS：坑 4（热启动没杀透） |
+| bootstrap 脚本报退出码 6 / 8 | Android：坑 1（冷启动窗口不足）；iOS：退出码 8 → 坑 4（热启动没杀透），退出码 6 → 坑 3（写配置失败，容器姿势问题） |
 | 改了 iOS bootstrap 配置不生效 | 坑 4 |
 | iOS 写配置报 `Permission denied` | 坑 3 |
 | 管道 / 重定向后的退出码永远 0 | 坑 5 |
