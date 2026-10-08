@@ -10,7 +10,8 @@
 deeplink intent 注入参数（接收端见 `demo-android/app/src/main/java/dev/handeye/demo/` 下
 `BootstrapIntentParser.kt` / `BootstrapState.kt` / `AndroidManifest.xml`）；iOS 没有 `am start`
 等价物，改为**文件注入**——把同一个语义的 deeplink url 写进 App 容器，App 冷启动后自读。
-两条链路的 url 语法、query 语义、进态判据完全同构，区别只在载体。
+两条链路解码后的参数语义与进态判据同构；path 基准与编码细节差异见 §1（如 `work_path`
+在 Android 侧是设备绝对路径、iOS 侧是 Documents 相对段）。
 
 ---
 
@@ -22,7 +23,7 @@ harness 通过 AFC（Apple File Conduit）往你的 App 容器里写一个 JSON 
 |---|---|
 | 文件路径 | App 容器 `Documents/handeye_bootstrap.json`（即 `FileManager` 的 `.documentDirectory` 目录下） |
 | JSON schema | `{"url": "<scheme>://bootstrap?<query>"}`——恰好一个字符串字段 `url` |
-| url 形态 | scheme = host 侧配置 `HANDEYE_DEEPLINK_SCHEME`，host 固定为 `bootstrap`，query 为 bootstrap 参数集；无素材时无 query，即 `{"url":"<scheme>://bootstrap"}` |
+| url 形态 | scheme = Mac 侧配置 `HANDEYE_DEEPLINK_SCHEME`，url 的 host 固定为 `bootstrap`，query 为 bootstrap 参数集；无素材时无 query，即 `{"url":"<scheme>://bootstrap"}` |
 | `work_path` | 当前唯一参数。单个素材是一个**相对 Documents 的路径段**（如 `handeye/media/a.mp4`）；多个素材以 `\|` 连接（如 `handeye/media/a.mp4\|handeye/media/b.mp4`）。App 负责把它拼在 Documents 根之后得到沙盒绝对路径——容器 Documents 根的 UUID 运行时随机，host 无法静态推断 |
 | 写入工具 | `afcclient --container <APP_ID> -u <UDID>`，命令走 stdin（`put` / `rm` / `ls`），脚本按 `printf '%s\n' <命令...> quit` 驱动 |
 | 写入方式 | 必须 `--container`，**不是** `--documents`：`--container` 进 App 容器根（`/` 下有 `Documents/`、`Library/` 等），写路径拼 `Documents/` 前缀；iOS 26 上 `--documents` 直接列根会 Permission denied |
@@ -43,7 +44,7 @@ harness 通过 AFC（Apple File Conduit）往你的 App 容器里写一个 JSON 
 |---|---|
 | 读取位置 | App 进程**冷启动完成回调**里读一次：UIKit 生命周期为 `AppDelegate application(_:didFinishLaunchingWithOptions:)`；纯 SceneDelegate 的 App 为 `scene(_:willConnectTo:options:)`。以你的 App 实际启动链路为准，取「进程冷启动后的首个完成回调」 |
 | 读取次数 | 同一进程生命周期内**只读一次**，之后即使文件变化也不重读 |
-| 热启动 | 后台唤醒（前台切换回来）**不重读**。App 被 terminate 但若只是退后台，唤醒属于热启动，不会重读配置 |
+| 热启动 | 后台唤醒（前台切换回来）**不重读**。即使 harness 侧调用过 terminate 类手段，若你的 App 实际只是退后台，唤醒仍属于热启动，不会重读配置 |
 | harness 侧配合 | 因此 `bootstrap_ios.sh` 的冷启动重拉是「真杀进程（SIGKILL）+ 重新 launch」，不杀透就没有下一次冷启动回调（见 §5 命令组） |
 
 **不满足时的症状**：
@@ -84,7 +85,8 @@ harness 通过 AFC（Apple File Conduit）往你的 App 容器里写一个 JSON 
 
 **不满足时的症状**：
 
-- App 监听端口与 `IOS_DEVICE_PORT` 配置不符 → `/health` 探测失败，`setup_ios.sh` 退出码 4。
+- App 监听端口与 `IOS_DEVICE_PORT` 配置不符 → `/health` 探测失败；`setup_ios.sh` 自身
+  报退出码 4，经 `bootstrap_ios.sh` 透传表现为退出码 3（setup 阶段失败）。
 - host 端口被别的进程占用 → iproxy 起后秒退，退出码 3（错误文案会提示换 localPort）。
 - 隧道进程被随手 kill → 后续 scenario 批跑全部连不上 `127.0.0.1:<hostPort>`；
   `bootstrap_ios.sh` 成功时会留下持隧道的后台 `setup_ios.sh` 并在 stdout 给出 pid，拆除用 `kill <pid>`。
@@ -102,6 +104,7 @@ xcrun devicectl device install app --device $UDID </path/to/YourApp.app>
 xcrun devicectl device process list --device $UDID | grep $APP_ID
 
 # 3. 真杀进程（必须 SIGKILL；只退后台的热启动不会重读 handeye_bootstrap.json）
+#    App 未在跑时跳过本步（脚本内有 [ -n "$pid" ] 守卫）
 PID=$(xcrun devicectl device process list --device $UDID | awk -v app="$APP_ID" '$0 ~ app {print $1; exit}')
 xcrun devicectl device process signal --device $UDID --pid $PID --signal SIGKILL
 
