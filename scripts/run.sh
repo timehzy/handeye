@@ -190,19 +190,23 @@ ci_warn() { printf '[warn] %s\n' "$*" >&2; }
 ci_info() { printf '[info] %s\n' "$*"; }
 
 # 配置来源归因（三级：env = 环境变量 > local = handeye.local.sh > example = 默认值）。
-# load_config 之后所有变量必有值，归因靠回溯三个来源：先看真实环境变量，再 grep
-# local.sh 是否有该变量的赋值行，都不是即 example 默认。
+# load_config 之后所有变量必有值，归因靠回溯三个来源：先看 load_config 之前的原始
+# 环境（快照，见 check_integration），再 grep local.sh 赋值行，都不是即 example 默认。
 # 已知边界（不修）：local.sh 非 export 变量会覆写已导出的 env 值（_common.sh source
 # 顺序的既定交互），此时归因仍标 [env]、显示的却是 local 值——local.sh 覆写已导出
 # 环境变量属于配置误用，提示意义已足够。
 config_source() { # $1 = 变量名 → stdout: env / local / example
   local var="$1" local_file="$HANDEYE_ROOT/scripts/handeye.local.sh"
-  if printenv "$var" >/dev/null 2>&1; then printf 'env'; return; fi
-  # local.sh 赋值两种写法都认：`VAR=x` 与 `: "${VAR:=x}"`。行首锚定（跳过上架注释靠
-  # 下面的字符类）+ 变量名后紧跟赋值符，天然排除 HANDEYE_FOO 命中 HANDEYE_FOO_BAR /
+  # [env] 以 load_config 之前的原始环境快照为准：local.sh 里 `export VAR=` 会把变量
+  # 并进真实环境，事后 printenv 无法区分「env 带来」还是「local.sh 导出」
+  if [ -n "${CI_ORIG_ENV:-}" ] && printf '%s\n' "$CI_ORIG_ENV" | grep -qx -- "$var"; then
+    printf 'env'; return
+  fi
+  # local.sh 赋值两种写法都认：`VAR=x`（可带 export 前缀）与 `: "${VAR:=x}"`。
+  # 行首锚定 + 变量名后紧跟赋值符，天然排除 HANDEYE_FOO 命中 HANDEYE_FOO_BAR /
   # OTHER_HANDEYE_FOO 的边界误报
   if [ -f "$local_file" ] \
-    && { grep -qE "^[[:space:]]*${var}=" "$local_file" \
+    && { grep -qE "^[[:space:]]*(export[[:space:]]+)?${var}=" "$local_file" \
       || grep -qE "^[[:space:]]*: \"\\\${${var}:=" "$local_file"; }; then
     printf 'local'; return
   fi
@@ -315,6 +319,9 @@ ci_ios() {
 
 check_integration() {
   log "check-integration（$PLATFORM）：软诊断逐项报告，不阻断执行"
+  # 归因基准：load_config source local.sh 之前的原始环境变量名快照——local.sh 里
+  # `export VAR=` 会把变量并进真实环境，事后 printenv 分不清来源（config_source 消费）
+  CI_ORIG_ENV=$(printenv | cut -d= -f1 | sort)
   # 硬前置例外 1：配置缺失（load_config → require_vars 失败 exit 4）
   load_config
   # 硬前置例外 2：java 缺失（工具链；版本非 17 只警告，check_jdk 内已处理）
@@ -461,6 +468,7 @@ ensure_bootstrap_demo() { # $1 = source（plan source 列：沙盒相对段，�
       6) warn "deeplink 注入失败：Manifest 是否注册了 \$HANDEYE_DEEPLINK_SCHEME intent-filter？见 docs/integration-points.md" ;;
       7) warn "冷启动失败或秒崩（am start 失败 / 20s 内进程未出现）" ;;
       8) warn "进态超时（Track A/B 均未通过）" ;;
+      *) warn "未预期的退出码（见 bootstrap_android.sh 头部退出码表）" ;;
     esac
     return 1
   fi
@@ -468,11 +476,16 @@ ensure_bootstrap_demo() { # $1 = source（plan source 列：沙盒相对段，�
   # 解析契约行 HANDEYE_HOST_PORT。bootstrap 已把隧道形式化（含 /health 探测），其契约即
   # 本组隧道真相源——setup 阶段（ensure_setup_and_health）见 SETUP_DONE=1 直接复用，不再
   # 二次 setup；仅 /health 重探失败时才走 do_setup 重建（App 换端口重启的兜底路径）。
-  hp=$(printf '%s\n' "$out" | grep -E '^HANDEYE_HOST_PORT=' | tail -1 | cut -d= -f2)
-  if [ -z "$hp" ]; then
-    warn "bootstrap 输出缺少 HANDEYE_HOST_PORT 契约行，无法确定本组 BASE_URL"
-    return 1
-  fi
+  # sed 数字校验与 do_setup 路径同款；契约行被破坏（非数字）是 harness 自身 bug，直接 die
+  hp=$(printf '%s\n' "$out" | grep -E '^HANDEYE_HOST_PORT=' | tail -1 | sed -E 's/^HANDEYE_HOST_PORT=([0-9]+).*/\1/')
+  case "$hp" in
+    '')
+      warn "bootstrap 输出缺少 HANDEYE_HOST_PORT 契约行，无法确定本组 BASE_URL"
+      return 1 ;;
+    *[!0-9]*)
+      # 契约行被破坏（非数字）是 harness 自身 bug，与「本组失败」语义不同，直接 die
+      die "bootstrap 契约行 HANDEYE_HOST_PORT 非法（'$hp'）——bootstrap_android.sh 输出契约被破坏" ;;
+  esac
   if [ -n "$USER_HOST_PORT" ]; then
     # --host-port：隧道归用户管。bootstrap 自建隧道仅作它的注入通道，跑批仍探用户端口；
     # 不动 HOST_PORT/FORWARD_CREATED（cleanup 不应去拆用户建的 forward）
@@ -509,6 +522,8 @@ ensure_bootstrap() { # $1 = page, $2 = source
 # ---- setup + health ----
 # setup_android.sh 只建 adb forward（无后台进程），成功后 forward 刻意保留复用；
 # App 重启可能换 debug server 端口，/health 探不通时重建一次 forward 再探。
+# 已知限制：多 key 组会多次 adb forward 累积（每组各自端口），卸载/重装设备后如端口
+# 异常，需手动 `adb forward --remove-all` 清理。
 
 SETUP_DONE=0
 BASE_URL=""
@@ -939,6 +954,19 @@ STUB
   if ensure_bootstrap_demo "" >/dev/null 2>&1; then
     echo "SELFTEST FAIL: 缺契约行应返回非 0" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1
   fi
+
+  # --host-port 分支：bootstrap 契约端口不覆盖用户隧道全局态（HOST_PORT/BASE_URL/
+  # FORWARD_CREATED/SETUP_DONE 全保持原值），INSTALL_FLAGS 复用态照常置位
+  export STUB_ARGS_FILE="$stub_dir/args4"; export STUB_RC=0; unset STUB_NO_CONTRACT || true
+  FRESHNESS_JUDGED=1; INSTALL_FLAGS=""
+  SERIAL="TESTSERIAL"; USER_HOST_PORT="45678"
+  HOST_PORT=""; BASE_URL=""; FORWARD_CREATED=0; SETUP_DONE=0
+  ensure_bootstrap_demo "" >/dev/null \
+    || { echo "SELFTEST FAIL: --host-port 分支成功路径返回非 0" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1; }
+  { [ -z "$HOST_PORT" ] && [ -z "$BASE_URL" ] && [ "$FORWARD_CREATED" = "0" ] && [ "$SETUP_DONE" = "0" ]; } \
+    || { echo "SELFTEST FAIL: --host-port 分支污染了用户隧道全局态（host=$HOST_PORT base=$BASE_URL fwd=$FORWARD_CREATED setup=$SETUP_DONE）" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1; }
+  [ "$INSTALL_FLAGS" = "--skip-build --skip-install" ] \
+    || { echo "SELFTEST FAIL: --host-port 分支 INSTALL_FLAGS 未置复用态（'$INSTALL_FLAGS'）" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1; }
   SCRIPT_DIR=$old_script_dir
   rm -rf "$stub_dir"
   FRESHNESS_JUDGED=0; INSTALL_FLAGS=""; LAST_BOOTSTRAP_KEY=""
