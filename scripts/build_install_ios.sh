@@ -138,7 +138,7 @@ project_args() {
     return 0
   fi
   local projs count proj
-  projs=$(ls -d "$PROJECT_DIR_ABS"/*.xcodeproj 2>/dev/null)
+  projs=$(ls -d "$PROJECT_DIR_ABS"/*.xcodeproj 2>/dev/null) || true
   [ -n "$projs" ] || die "$PROJECT_DIR_ABS 下没有 *.xcodeproj（IOS_WORKSPACE 为空时按 -project 构建，需要 xcodeproj；或配 IOS_WORKSPACE）" 4
   count=$(printf '%s\n' "$projs" | awk 'NF {n++} END {print n+0}')
   proj=$(printf '%s\n' "$projs" | head -1)
