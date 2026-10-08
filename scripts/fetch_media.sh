@@ -85,6 +85,13 @@ main() {
   if $ADB shell test -f "$device_abs" 2>/dev/null; then
     log "设备已有素材，跳过 push: $device_abs"
   else
+    # 占位符早警：fixtures 模板（e2e.example.json）的 host_path 是 ABSOLUTE/PATH/TO 形态，
+    # 能过反查的形态校验，但要到这里才以「host 素材不存在」晚败。提前 warn 指路，
+    # 退出码契约不变（仍走下方 die exit 1）。
+    case "$MEDIA_HOST" in
+      *ABSOLUTE/PATH/TO*)
+        warn "host 路径仍是 fixtures 模板占位符——请复制 fixtures/e2e.example.json 为 fixtures/e2e.local.json 并改写 host_path" ;;
+    esac
     # 第二级兜底：从 host 本地 push（源文件不存在 = 无可拉取源，参数/路径错 exit 1）
     [ -f "$MEDIA_HOST" ] || die "host 素材不存在: $MEDIA_HOST" 1
     log "push 素材: $MEDIA_HOST -> $device_abs"

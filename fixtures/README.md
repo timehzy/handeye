@@ -6,7 +6,9 @@
 
 ## 配置三级读取
 
-catalog 路径按以下优先级解析（shell 脚本与 orchestrator 同一语义）：
+catalog 路径按以下优先级解析。**三级回退是经 scripts/ 链路（run.sh / bootstrap_* /
+fetch_media.sh）的语义**：`_common.sh` 的 `load_config` 会把 `FIXTURES_JSON` 归一为
+仓库根绝对路径，run.sh 再桥接成 `HANDEYE_FIXTURES_JSON` 传给 orchestrator。
 
 1. **环境变量**：shell 脚本读 `FIXTURES_JSON`，orchestrator 反查读
    `HANDEYE_FIXTURES_JSON`（run.sh 会把前者桥接成后者，只需设一个）；
@@ -17,6 +19,17 @@ catalog 路径按以下优先级解析（shell 脚本与 orchestrator 同一语�
    ```
 
 3. **`fixtures/e2e.example.json`**：随仓库提交的模板，前两级都不存在时的回退。
+
+**直调 orchestrator 不走三级回退**：`./gradlew :demo-android:e2e:run` 的 JavaExec
+工作目录是 `demo-android/e2e`，orchestrator 的默认候选相对它解析，找不到仓库根的
+example，会以「fixture catalog 不存在」报错。直调（如只打印 plan 自检）需显式给出
+仓库根绝对路径：
+
+```sh
+export HANDEYE_FIXTURES_JSON="$PWD/fixtures/e2e.example.json"
+./gradlew :demo-android:e2e:run --args="--print-bootstrap-plan --all" \
+    -Dorg.gradle.configuration-cache=false --console=plain -q
+```
 
 ## devices 字段
 
@@ -57,7 +70,8 @@ feed 断言，且设备沙盒已有该文件时推送自动跳过。
 
 `fixtures/media/sample.mp4` 是随仓库提交的样例素材：1 秒、16×16 纯色、约 1.5 KB，
 H.264 + faststart，Android / iOS 推送链路（含设备端按扩展名识别媒体类型）均可处理。
-local 里的 `host_path` 指到本仓库的该文件即可：
+local 里的 `host_path` 指到本仓库的该文件即可（前提：已按上文复制出
+`fixtures/e2e.local.json`）：
 
 ```sh
 jq --arg p "$PWD/fixtures/media/sample.mp4" \
