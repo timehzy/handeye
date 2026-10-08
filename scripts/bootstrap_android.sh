@@ -8,7 +8,7 @@
 # 参数:
 #   --media-path <path>   沙盒内相对段素材（如 e2e_media/xxx.mp4，脚本拼 files/ 根）。多素材重复该
 #                         参数（或单值内以 `|` 分隔）；紧随其后的 --media-host 归到最近一次
-#                         --media-path 开启的素材。本期只保证解析与校验，push 落地见下
+#                         --media-path 开启的素材；push 落地委派 fetch_media.sh（两级兜底）
 #   --media-host <path>   素材 Mac 本地绝对路径（push 源），归属最近一次 --media-path 的素材
 #   --skip-build          跳过 gradle 构建（委托 build_install_android.sh）
 #   --skip-install        跳过 adb install（委托 build_install_android.sh）
@@ -38,7 +38,7 @@
 #   2  参数错误（未知参数 / 素材相对段非法 / --media-host 出现在 --media-path 之前）
 #   3  setup_android.sh 阶段失败（透传其语义：隧道形式化阶段）
 #   4  前置缺失（adb / curl 未装 / 配置缺失）/ debug server 端口反查失败
-#   5  素材 push 失败（fetch_media.sh 未落地或调用失败）
+#   5  素材 push 失败（fetch_media.sh 调用失败）
 #   6  deeplink 注入失败（3 次重试后 /source?name=bootstrap 仍非 null）
 #   7  冷启动失败或秒崩（am start 失败 / 20s 内进程未出现）
 #   8  进态超时（30s 内 Track A/B 均未通过）
@@ -77,8 +77,6 @@ BASE_URL=""
 DEEPLINK=""
 
 # ---- 参数解析 ----
-# 注：--device-path 作为独立入口 DEFERRED 到 Task 14——素材参数的最终接口在 fetch_media.sh
-# 落地时定稿（Task 14 spec 定义 --device-path/--host），届时再对齐本脚本的素材入口。
 
 parse_args() {
   while [ $# -gt 0 ]; do
@@ -161,8 +159,9 @@ check_prerequisites() {
 }
 
 # ---- 素材解析与 push 委派 ----
-# 逐素材拼根（files 根 + 相对段）；设备已有则跳过，没有则委派 fetch_media.sh push。
-# fetch_media.sh（Task 14）未落地时给清晰指路并按 exit 5（素材 push 失败）终止。
+# 逐素材拼根（files 根 + 相对段）；设备已有则跳过，没有则委派 fetch_media.sh 两级兜底 push。
+# fetch_media.sh 与本脚本素材入口同构（--media-path / --media-host），其任意非零返回按 exit 5
+# （素材 push 失败）终止；调用失败详情见 fetch_media.sh 自己打的错误信息。
 resolve_media() {
   MEDIA_ABS_PATHS=()
   local i
@@ -181,8 +180,8 @@ resolve_media() {
 
     local fetch_media="$SCRIPT_DIR/fetch_media.sh"
     if [ ! -f "$fetch_media" ]; then
-      printf '错误: media[%s] 设备沙盒无素材，需要 push，但 fetch_media.sh 未落地（Task 14）\n' "$i" >&2
-      printf '  先把素材放到设备路径 %s，或等 Task 14 落地后提供 --media-host 拉取\n' "$abs_path" >&2
+      printf '错误: media[%s] 设备沙盒无素材，需要 push，但 fetch_media.sh 缺失\n' "$i" >&2
+      printf '  先把素材放到设备路径 %s，或提供 --media-host 拉取\n' "$abs_path" >&2
       exit 5
     fi
     if [ -z "$host_path" ]; then
@@ -190,7 +189,11 @@ resolve_media() {
       exit 5
     fi
     log "media[$i] 从 '$host_path' 拉取素材（fetch_media.sh）"
-    if ! "$fetch_media" --smb "$host_path" --device-path "$device_rel" 2>&1; then
+    # fetch_media.sh 是单素材独立入口：与本脚本同名的 --media-path/--media-host，
+    # 显式 -s 传选中的设备（SERIAL 为空时它自行 resolve_device，与第一台选择一致）
+    local fetch_args=(--media-path "$device_rel" --media-host "$host_path")
+    if [ -n "$SERIAL" ]; then fetch_args+=(-s "$SERIAL"); fi
+    if ! "$fetch_media" "${fetch_args[@]}" 2>&1; then
       printf '错误: media[%s] 素材 push 失败（源: %s）\n' "$i" "$host_path" >&2
       exit 5
     fi

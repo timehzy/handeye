@@ -44,9 +44,8 @@
 #   page=demo：bootstrap 整体委托 bootstrap_android.sh（N2 已落地，替代 v1 内联
 #   build+am-start fast-path）——build/install、冷启动、deeplink 进态、建隧道都归它；
 #   组素材 source 列以 --media-path 透传（多素材 | 连接与其 split_pipe 语义一致，plan 反查
-#   已保证相对段合法），设备已有素材即跳过 push，缺素材时它以 exit 5 清晰早报。
-#   source 列含 host/smb 段的 fetch_media 自动拉取（Task 14）落地前，缺素材的组会判失败，
-#   不影响其它组。
+#   已保证相对段合法），设备已有素材即跳过 push，缺素材时 bootstrap 委派 fetch_media.sh
+#   两级兜底（设备已有 → host 本地）自动拉取，失败以 exit 5 清晰早报，不影响其它组。
 #
 # 前置:
 #   - Android device 已连接（adb devices 可见），debug 变体 App 可启动
@@ -449,7 +448,8 @@ ensure_bootstrap_demo() { # $1 = source（plan source 列：沙盒相对段，�
 
   # 组素材需求透传 --media-path（plan source 列与 bootstrap split_pipe 语义一致：多素材
   # | 连接；plan 反查阶段已校验相对段合法性）。设备已有素材时 bootstrap 内部跳过 push，
-  # 缺素材且 fetch_media.sh（Task 14）未落地时它以 exit 5 清晰早报（本组判失败，不影响其它组）。
+  # 缺素材时委派 fetch_media.sh 两级兜底（host 源来自 catalog 源路径），失败以 exit 5
+  # 清晰早报（本组判失败，不影响其它组）。
   [ -z "$source" ] || args+=("--media-path" "$source")
   # 多机时必须把选中的设备传下去（bootstrap 内部 resolve_device 同理，双保险）。
   # 用 || 而非 && 短路：SERIAL 为空时整条 && 列表返回非零，在 set -e 函数体内会误杀脚本
@@ -466,7 +466,7 @@ ensure_bootstrap_demo() { # $1 = source（plan source 列：沙盒相对段，�
     case "$rc" in
       3) warn "setup 阶段失败（隧道形式化）" ;;
       4) warn "前置缺失 / debug server 端口反查失败" ;;
-      5) warn "素材 push 失败：设备沙盒缺素材且 fetch_media.sh 未落地（Task 14）；先把素材放到设备或配好 catalog 源路径" ;;
+      5) warn "素材 push 失败：设备沙盒缺素材且 fetch_media.sh 兜底失败；先把素材放到设备或配好 catalog 源路径" ;;
       6) warn "deeplink 注入失败：Manifest 是否注册了 \$HANDEYE_DEEPLINK_SCHEME intent-filter？见 docs/integration-points.md" ;;
       7) warn "冷启动失败或秒崩（am start 失败 / 20s 内进程未出现）" ;;
       8) warn "进态超时（Track A/B 均未通过）" ;;
