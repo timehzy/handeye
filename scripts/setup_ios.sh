@@ -16,8 +16,7 @@
 #   -h, --help  打帮助
 #
 # 前置:
-#   1. libimobiledevice 已装：idevice_id / iproxy / afcclient 在 PATH
-#      （brew install libimobiledevice）；devicectl 由 Xcode 自带（xcrun devicectl）
+#   1. libimobiledevice 已装：idevice_id / iproxy 在 PATH（brew install libimobiledevice）
 #   2. iOS 真机通过 USB 连接（idevice_id 能看到），已解锁并信任本机
 #   3. debug 变体 App 已启动，且装配器 HandeyeInstaller.install 已成功（debug server 已监听）
 #
@@ -29,12 +28,14 @@
 #   隧道由本脚本持有的 iproxy 子进程维持——契约行输出后脚本前台驻留（wait iproxy），
 #   杀掉本脚本（Ctrl-C / TERM / 正常退出）即拆隧道并释放 host 端口。需要常驻隧道的
 #   调用方保持本脚本运行（如后台启动并从 stdout 读契约行），或自建 iproxy 管理。
+#   拆除信号请用 TERM（后台拉起后 kill 的默认信号即 TERM）；非 job control 场景下
+#   INT（Ctrl-C 语义）对后台脚本不可靠（SIGINT 会被忽略进入）。
 #
 # 退出码:
 #   0  成功（隧道建立且 /health 就绪）
-#   1  前置缺失（iproxy / idevice_id / afcclient / jq / curl 未装）或 iOS 真机未连接
+#   1  前置缺失（iproxy / idevice_id / curl / jq 未装）或 iOS 真机未连接
 #   2  参数错误 / host 端口未就绪（iproxy 存活但端口一直不可连接）
-#   3  iproxy 隧道建立失败（起后秒退，host 端口可能被占用）
+#   3  iproxy 隧道失败（建立时起后秒退，host 端口可能被占用；或运行期 iproxy 中途退出致隧道失效）
 #   4  /health 未就绪
 set -eu
 
@@ -72,13 +73,13 @@ parse_args() {
 # ---- 前置检查 ----
 # 不用 _common.sh 的 require_tools：它统一 exit 4（前置缺失语义），而本脚本 4 留给
 # /health 未就绪；iproxy / 真机类前置缺失按本脚本约定 exit 1，逐项列出缺失与安装指引。
+# 只查本脚本真正用到的工具——afcclient / devicectl 不在此列（本脚本纯 iproxy 工作流，
+# 多余的检查会把正常环境无故拦在 exit 1）。
 require_ios_tools() {
   local missing=0
-  for tool in idevice_id iproxy afcclient; do
-    command -v "$tool" >/dev/null 2>&1 || { printf '缺少 %s（brew install libimobiledevice）\n' "$tool" >&2; missing=1; }
-  done
-  command -v curl >/dev/null 2>&1 || { printf '缺少 curl（macOS 自带，重装命令行工具: xcode-select --install）\n' >&2; missing=1; }
-  xcrun --find devicectl >/dev/null 2>&1 || { printf '缺少 devicectl（Xcode 自带，确认已装 Xcode 并 xcode-select 指向它）\n' >&2; missing=1; }
+  command -v idevice_id >/dev/null 2>&1 || { printf '缺少 idevice_id（brew install libimobiledevice）\n' >&2; missing=1; }
+  command -v iproxy    >/dev/null 2>&1 || { printf '缺少 iproxy（brew install libimobiledevice）\n' >&2; missing=1; }
+  command -v curl      >/dev/null 2>&1 || { printf '缺少 curl（macOS 自带，重装命令行工具: xcode-select --install）\n' >&2; missing=1; }
   [ "$missing" -eq 0 ] || exit 1
 }
 
@@ -116,6 +117,8 @@ resolve_udid() {
 
 # ---- 等 host 端口可连接（iproxy 已 listen） ----
 # iproxy 存活不代表端口已 bind 可连（冷机/高负载有延迟）；10s（20 × 0.5s）不可连 = 端口未就绪。
+# 探测是向 host 端口真实发起 TCP 连接（最多 20 次），连接经 iproxy 到达 device 端 debug
+# server——无害：server 把空连接正常关闭即可，不影响随后的 /health 等请求。
 wait_port_listening() { # $1=port
   local i
   for i in $(seq 1 20); do
@@ -147,7 +150,8 @@ main() {
   trap 'exit 129' HUP
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  # 仅 udid 非空时加 -u（iproxy 新语法: 「冒号分隔端口对 + -u 指定 udid」）
+  # 仅 udid 非空时加 -u（iproxy 新语法: 「冒号分隔端口对 + -u 指定 udid」）；
+  # ${UDID:+-u "$UDID"} 故意不加引号：需分词成 -u 与 udid 两个参数，与 _common.sh 的 $ADB 同款约定
   iproxy "$host_port:$DEVICE_PORT" ${UDID:+-u "$UDID"} >/dev/null 2>&1 &
   IPROXY_PID=$!
   sleep 1
@@ -183,8 +187,11 @@ main() {
 拆除隧道:
     杀掉本脚本（Ctrl-C / kill），或退出后 iproxy 已由脚本清理
 EOF
-  # 前台驻留：脚本退出（含信号）时 EXIT trap 杀掉 iproxy，隧道随之拆除
-  wait "$IPROXY_PID" 2>/dev/null || true
+  # 前台驻留：脚本退出（含信号）时 EXIT trap 杀掉 iproxy，隧道随之拆除。
+  # iproxy 中途死亡（被外部 kill / 自身崩溃）不能静默吞掉——隧道已没了，须明确报错让调用方重建。
+  local proxy_rc=0
+  wait "$IPROXY_PID" || proxy_rc=$?
+  [ "$proxy_rc" -eq 0 ] || die "iproxy 已退出（隧道已拆除），如需重建隧道请重跑本脚本" 3
 }
 
 # EXIT trap：清理本次启动的 iproxy 子进程，失败/异常路径不残留占用 host 端口
