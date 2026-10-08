@@ -114,6 +114,8 @@ main() {
   # 输出契约行（run.sh 按行解析 KEY=VALUE）
   echo "HANDEYE_HOST_PORT=$host_port"
   echo "HANDEYE_DEVICE_PORT=$DEVICE_PORT"
+  # 显式 localPort 时两条转发（host 端口 + discover 的 device 端口）都会被清：
+  # device 端口那条在建立隧道时已删除，用户再删 host 端口那条即全部清理干净
   cat <<EOF
 
 隧道建立完成
@@ -126,8 +128,6 @@ main() {
 
 移除隧道:
     $ADB forward --remove tcp:$host_port
-    # 显式 localPort 时两条转发（host 端口 + discover 的 device 端口）都会被清：
-    # device 端口那条在建立隧道时已删除，这里再删 host 端口那条即全部清理干净
 EOF
 }
 
