@@ -37,7 +37,7 @@
 #   0  成功进态（Track A 强判定，或 Track B 弱判定带警告）
 #   2  参数错误（未知参数 / 素材相对段非法 / --media-host 出现在 --media-path 之前）
 #   3  setup_android.sh 阶段失败（透传其语义：隧道形式化阶段）
-#   4  前置缺失（adb / curl 未装，或配置缺失）
+#   4  前置缺失（adb / curl 未装 / 配置缺失）/ debug server 端口反查失败
 #   5  素材 push 失败（fetch_media.sh 未落地或调用失败）
 #   6  deeplink 注入失败（3 次重试后 /source?name=bootstrap 仍非 null）
 #   7  冷启动失败或秒崩（am start 失败 / 20s 内进程未出现）
@@ -326,9 +326,12 @@ wait_ready() {
 # 其 HANDEYE_HOST_PORT/HANDEYE_DEVICE_PORT 输出作为最终契约。失败 exit 3（setup 阶段）。
 formalize_tunnel() {
   [ -n "$SKIP_FORWARD" ] && { log "跳过 setup_android.sh 形式化建隧道（--skip-forward）"; return 0; }
-  log "setup_android.sh 形式化建隧道 + /health 探测"
+  # 多机时必须把选中的设备传下去：setup_android.sh 内部自己也会 resolve_device，
+  # 不传 -s 它可能选到另一台设备，隧道建错设备且契约行被污染（run.sh 要消费）。
+  [ -n "$SERIAL" ] || die "SERIAL 为空（resolve_device 未选中设备）" 4
+  log "setup_android.sh -s $SERIAL 形式化建隧道 + /health 探测"
   local out rc=0 hp dp
-  out=$("$SCRIPT_DIR/setup_android.sh") || rc=$?
+  out=$("$SCRIPT_DIR/setup_android.sh" -s "$SERIAL") || rc=$?
   printf '%s\n' "$out"
   if [ "$rc" -ne 0 ]; then
     die "setup_android.sh 返 $rc（setup 阶段失败）" 3
