@@ -11,7 +11,11 @@ HANDEYE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 load_config() {
   [ -f "$HANDEYE_ROOT/scripts/handeye.local.sh" ] && . "$HANDEYE_ROOT/scripts/handeye.local.sh"
   [ -f "$HANDEYE_ROOT/scripts/handeye.example.sh" ] && . "$HANDEYE_ROOT/scripts/handeye.example.sh"
-  : "${FIXTURES_JSON:="$HANDEYE_ROOT/fixtures/e2e.local.json"}"
+  # FIXTURES_JSON 归一为绝对路径（example 模板给的是相对路径，[ -f ] 不能依赖调用方 CWD）
+  case "$FIXTURES_JSON" in
+    /*) ;;
+    *)  FIXTURES_JSON="$HANDEYE_ROOT/$FIXTURES_JSON" ;;
+  esac
   [ -f "$FIXTURES_JSON" ] || FIXTURES_JSON="$HANDEYE_ROOT/fixtures/e2e.example.json"
 }
 
