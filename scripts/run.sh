@@ -96,12 +96,13 @@ FORCE_REINSTALL=0
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
-      --scenario)  SCENARIO="${2:-}"; shift 2 ;;
-      --tag)       TAG="${2:-}"; shift 2 ;;
+      # 带值 flag：$# 不足 2 时 shift 2 会在 set -e 下静默 exit 1，这里显式判空报参数错（exit 2）
+      --scenario)  [ -n "${2:-}" ] || die "参数 --scenario 缺少值" 2; SCENARIO="$2"; shift 2 ;;
+      --tag)       [ -n "${2:-}" ] || die "参数 --tag 缺少值" 2; TAG="$2"; shift 2 ;;
       --all)       ALL=1; shift 1 ;;
-      --platform)  PLATFORM="${2:-}"; shift 2 ;;
-      --serial)    SERIAL="${2:-}"; shift 2 ;;
-      --host-port) USER_HOST_PORT="${2:-}"; shift 2 ;;
+      --platform)  [ -n "${2:-}" ] || die "参数 --platform 缺少值" 2; PLATFORM="$2"; shift 2 ;;
+      --serial)    [ -n "${2:-}" ] || die "参数 --serial 缺少值" 2; SERIAL="$2"; shift 2 ;;
+      --host-port) [ -n "${2:-}" ] || die "参数 --host-port 缺少值" 2; USER_HOST_PORT="$2"; shift 2 ;;
       --check-integration) CHECK_INTEGRATION=1; shift 1 ;;
       --force-reinstall) FORCE_REINSTALL=1; shift 1 ;;
       -i|--interactive) INTERACTIVE=1; shift 1 ;;
@@ -492,9 +493,11 @@ run_group_scenarios() { # $1 = 逗号分隔 members
   local members="$1"
   log "跑批: gradlew :demo-android:e2e:run --args=\"$members $BASE_URL\""
   local pipe rc
-  # 函数在 if 条件上下文被调，set -e 全程挂起，管道非零退出不会误杀脚本
+  # 调用形态是 `run_group_scenarios ... || group_ok=1`（|| 列表内）——errexit 在函数体内
+  # 全程被抑制，gradle 管道非零退出不会误杀脚本，无需靠 PIPESTATUS 之外的额外保护
   ( cd "$HANDEYE_ROOT" && ./gradlew :demo-android:e2e:run --args="$members $BASE_URL" \
       -Dorg.gradle.configuration-cache=false --console=plain ) 2>&1 | tee -a "$LOG_FILE"
+  # PIPESTATUS 必须在管道之后立即取：tee 掩盖了 gradle 退出码（坑 5）
   pipe=("${PIPESTATUS[@]}")
   rc=${pipe[0]}
   if [ "$rc" -ne 0 ]; then
