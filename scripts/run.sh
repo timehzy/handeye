@@ -788,6 +788,11 @@ cleanup() {
       sleep 0.1
       waited=$((waited + 1))
     done
+    # 5s（50 × 0.1s）轮询上限后仍存活 = 进程忽略/拦截了 TERM，静默放过会留下持隧道的
+    # 残留进程占用 host 端口——补 warn 给出 pid 与手动清理命令（与「未能解析 pid」warn 同风格）
+    if kill -0 "$pid" 2>/dev/null; then
+      warn "setup_ios 进程 pid:$pid 在 5s 内未响应 TERM 仍存活，隧道进程残留——请手动 kill -9 $pid 清理"
+    fi
   done
   IOS_TUNNEL_PIDS=()
   # 无 adb 环境（纯 host 自检 / mock 冒烟 / iOS 链路）：静默跳过转发清理，不报错
@@ -1283,7 +1288,8 @@ STUB
   # 且 cleanup 杀该 pid 并等回收 ④--host-port → --skip-forward 透传、不解析契约、
   # 不登记 pid、全局态不污染 ⑤rc 6 → iOS 专属消息（写配置失败，≠ Android deeplink 语义）
   # 且不污染复用态 ⑥rc 4 → 前置缺失消息 ⑦缺契约行 → 失败（自建隧道成功必须报契约）
-  local ios_stub fake_setup_pid
+  # ⑧stub 无 pid 报文 → 组成功 + 「无法自动清理」warn + 零登记 + cleanup 不误杀未登记进程
+  local ios_stub fake_setup_pid local_untracked_pid
   ios_stub=$(mktemp -d)
   cat > "$ios_stub/bootstrap_ios.sh" <<'STUB'
 #!/bin/sh
@@ -1376,6 +1382,30 @@ STUB
   if ensure_bootstrap_ios "" >/dev/null 2>&1; then
     echo "SELFTEST FAIL: iOS 缺契约行应返回非 0" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1
   fi
+
+  # ⑧ STUB_NO_PID 分支（stub 输出无 pid 报文，等价 bootstrap 报文格式漂移的兜底路径）：
+  # 组不判失败，但应打「无法自动清理」warn、不登记任何 pid、cleanup 不产生任何 kill。
+  # 用一个真 sleep 进程充当「用户自己的隧道进程」验证 cleanup 不误杀无关进程
+  export STUB_ARGS_FILE="$ios_stub/args_ios6"; export STUB_RC=0; export STUB_NO_PID=1
+  unset STUB_NO_CONTRACT STUB_SETUP_PID || true
+  INSTALL_FLAGS=""; USER_HOST_PORT=""
+  HOST_PORT=""; BASE_URL=""; FORWARD_CREATED=0; SETUP_DONE=0; IOS_TUNNEL_PIDS=()
+  sleep 60 & local_untracked_pid=$!
+  ensure_bootstrap_ios "" >/dev/null 2>"$ios_stub/warn_ios6" \
+    || { echo "SELFTEST FAIL: iOS 无 pid 报文的兜底路径应判组成功" >&2; kill "$local_untracked_pid" 2>/dev/null || true; wait "$local_untracked_pid" 2>/dev/null || true; SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1; }
+  grep -q '无法自动清理' "$ios_stub/warn_ios6" \
+    || { echo "SELFTEST FAIL: iOS 无 pid 报文未打无法自动清理 warn（$(cat "$ios_stub/warn_ios6")）" >&2; kill "$local_untracked_pid" 2>/dev/null || true; wait "$local_untracked_pid" 2>/dev/null || true; SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1; }
+  [ "${#IOS_TUNNEL_PIDS[@]}" -eq 0 ] \
+    || { echo "SELFTEST FAIL: iOS 无 pid 报文误登记隧道 pid（${IOS_TUNNEL_PIDS[*]}）" >&2; kill "$local_untracked_pid" 2>/dev/null || true; wait "$local_untracked_pid" 2>/dev/null || true; SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1; }
+  cleanup >/dev/null 2>&1 || true
+  if ! kill -0 "$local_untracked_pid" 2>/dev/null; then
+    echo "SELFTEST FAIL: cleanup 误杀了未登记的隧道进程 pid $local_untracked_pid" >&2
+    wait "$local_untracked_pid" 2>/dev/null || true
+    SCRIPT_DIR=$old_script_dir; rm -rf "$ios_stub"; return 1
+  fi
+  kill "$local_untracked_pid" 2>/dev/null || true
+  wait "$local_untracked_pid" 2>/dev/null || true
+  IOS_TUNNEL_PIDS=()
 
   # 复位 iOS 自检消费的全局态（局部于本自检进程，无跨进程影响）
   SCRIPT_DIR=$old_script_dir
