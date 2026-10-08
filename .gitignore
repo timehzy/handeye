@@ -37,3 +37,7 @@ build/
 *.iml
 .idea/
 .DS_Store
+
+# handeye 脚手架本地配置
+scripts/handeye.local.sh
+scripts/hooks/*.sh
