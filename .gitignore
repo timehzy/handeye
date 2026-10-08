@@ -44,3 +44,6 @@ scripts/hooks/*.sh
 
 # e2e fixtures 本机覆盖（由 fixtures/e2e.example.json 复制）
 fixtures/e2e.local.json
+
+# run.sh 跑批产物（<ts>/run.log 等）
+e2e/artifacts/
