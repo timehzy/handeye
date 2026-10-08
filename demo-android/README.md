@@ -6,4 +6,5 @@
 **结构**：`app/`（demo App，handeye L0 接线模板）、`e2e/`（JVM scenario 模块）、
 `scripts/run_demo_e2e.sh`（`scripts/run.sh` 的薄封装，透传全部参数）。
 
-**跑起来**：`./scripts/run.sh --all`（真机 6/6 PASS 为准入）。
+**跑起来**：跑全部场景在仓库根执行——见根 README Quickstart，或 `../scripts/run.sh --all`
+（真机 6/6 PASS 为准入）。

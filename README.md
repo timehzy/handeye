@@ -36,7 +36,7 @@ handeye/
 ├── device-ios/          # 【iOS 原生·二期】Swift 接口签名草案 + 协议映射文档
 ├── demo-android/        # 信息流 demo App + 6 个 e2e scenario + 薄封装跑批入口
 ├── conformance/         # 协议一致性：schema 校验 + golden 对拍 CLI
-└── scripts/             # 【新增】runner 侧脚手架：build / setup / bootstrap / run 总控
+└── scripts/             # runner 侧脚手架：build / setup / bootstrap / run 总控
 ```
 
 ## Quickstart：跑 demo（Android 真机）
