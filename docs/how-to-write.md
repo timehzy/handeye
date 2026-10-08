@@ -229,5 +229,6 @@ val feedScenarios: List<ScenarioMeta> = listOf(
 - 协议一致性套件（结构校验 + golden 对拍）：[conformance/README.md](../conformance/README.md)
 - 接入点清单（App 侧怎么装配 providers / commands）：[docs/integration-points.md](integration-points.md)
 - fixtures 模板与素材反查：[fixtures/README.md](../fixtures/README.md)
+- 真机高频坑排查（症状 / 根因 / 绕过）：[docs/troubleshooting.md](troubleshooting.md)
 - demo 真实样例：[Scenarios.kt](../demo-android/e2e/src/main/kotlin/dev/handeye/demo/e2e/scenarios/Scenarios.kt) · [FeedContext.kt](../demo-android/e2e/src/main/kotlin/dev/handeye/demo/e2e/FeedContext.kt) · [FeedFacts.kt](../demo-android/e2e/src/main/kotlin/dev/handeye/demo/e2e/FeedFacts.kt) · [FeedApp.kt](../demo-android/app/src/main/java/dev/handeye/demo/FeedApp.kt)
 - 批跑总控：`./scripts/run.sh -h`
