@@ -30,23 +30,8 @@ MEDIA_PATH=""   # --media-path，沙盒内相对段（如 e2e_media/PRO_VID_xxx.
 MEDIA_HOST=""   # --media-host，host 本地素材绝对路径（push 源）
 SERIAL=""       # -s 显式设备序列号
 
-# 相对段合法性校验：非空、非绝对路径、分段非空且非 '..'、字符集仅限字母数字点下划线连字符。
-# 相对段会拼进 files 根与 deeplink 的 work_path query，独立调用时挡住逃逸/特殊字符。
-# 与 bootstrap_android.sh 的同名实现逐字节同构（两边各自内联，改动需同步）。
-is_valid_relative_path() {
-  local p="$1"
-  [ -n "$p" ] || return 1
-  case "$p" in /*) return 1 ;; esac   # 非绝对路径（[ 不支持裸 /* 模式，须走 case）
-  # 完整 .. 段 / 空段 / 首尾斜杠 → 违规；其余非法字符（非字母数字点下划线连字符斜杠）→ 违规
-  # `..` 裸段也要拒：`*/..` 模式要求前面有斜杠，挡不住整段就是 ".." 的值。
-  case "$p" in
-    ..|*/../*|../*|*/..|*//*|*/|/*) return 1 ;;
-  esac
-  case "$p" in
-    *[!A-Za-z0-9._/-]*) return 1 ;;
-  esac
-  return 0
-}
+# 相对段会拼进 files 根与 deeplink 的 work_path query，独立调用时挡住逃逸/特殊字符
+# （校验本体收拢于 _common.sh 的 is_valid_relative_path）。
 
 parse_args() {
   while [ $# -gt 0 ]; do

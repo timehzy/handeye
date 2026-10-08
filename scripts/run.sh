@@ -446,12 +446,12 @@ SERIAL=""
 # 端口隧道都归那个脚本；run.sh 只传开关、解析契约行、维护 INSTALL_FLAGS 复用态。
 # 上游 ensure_bootstrap_main 对应段。
 
-# 数 split_pipe 语义下的元素个数（与 bootstrap split_pipe 同款：保留尾随空段，无 '|' = 1）。
-# 用于预判 source 列的素材数；不引数组，避免为一次计数引入全局态。
+# 数 split_pipe 语义下的元素个数（保留尾随空段，无 '|' = 1）。
+# 实现复用 _common.sh 的 split_pipe（元素数语义与原内联计数器逐字节一致，含尾随空段）；
+# 这里仅是计数便捷封装，PIPE_SPLIT_OUT 的写入无副作用（run.sh 无其它 split_pipe 消费方）。
 pipe_split_count() { # $1 = 待拆字符串，stdout = 元素数
-  local s="$1" n=1
-  while [ "$s" != "${s#*|}" ]; do n=$((n + 1)); s="${s#*|}"; done
-  printf '%s' "$n"
+  split_pipe "$1"
+  printf '%s' "${#PIPE_SPLIT_OUT[@]}"
 }
 
 ensure_bootstrap_demo() { # $1 = source（plan source 列：设备沙盒相对段，多素材 | 连接，可空）

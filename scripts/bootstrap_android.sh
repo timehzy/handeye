@@ -126,35 +126,6 @@ parse_args() {
   done
 }
 
-# 按 `|` 拆出多素材列的元素，保留空段（尾随空段也要留住，否则与 path 下标错位）。
-# 结果写全局数组 PIPE_SPLIT_OUT。单值（无 `|`）得到长度 1 的数组。
-PIPE_SPLIT_OUT=()
-split_pipe() {  # $1 = 待拆字符串
-  local s="$1"
-  PIPE_SPLIT_OUT=()
-  while true; do
-    PIPE_SPLIT_OUT+=("${s%%|*}")
-    [ "$s" = "${s%%|*}" ] && break
-    s="${s#*|}"
-  done
-}
-
-# 相对段合法性校验：非空、非绝对路径、分段非空且非 '..'、字符集仅限字母数字点下划线连字符。
-is_valid_relative_path() {
-  local p="$1"
-  [ -n "$p" ] || return 1
-  case "$p" in /*) return 1 ;; esac   # 非绝对路径（[ 不支持裸 /* 模式，须走 case）
-  # 完整 .. 段 / 空段 / 首尾斜杠 → 违规；其余非法字符（非字母数字点下划线连字符斜杠）→ 违规
-  # `..` 裸段也要拒：`*/..` 模式要求前面有斜杠，挡不住整段就是 ".." 的值。
-  case "$p" in
-    ..|*/../*|../*|*/..|*//*|*/|/*) return 1 ;;
-  esac
-  case "$p" in
-    *[!A-Za-z0-9._/-]*) return 1 ;;
-  esac
-  return 0
-}
-
 # ---- 前置检查 ----
 
 check_prerequisites() {

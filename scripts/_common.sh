@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# handeye 脚手架公共层：配置加载 / 依赖检查 / 端口发现 / 健康检查 / 钩子。
+# handeye 脚手架公共层：配置加载 / 依赖检查 / 路径校验 / 端口发现 / 健康检查 / 钩子。
 # 被各脚本 source；不单独执行。
 set -eu
 
@@ -49,6 +49,38 @@ require_vars() {
     [ -n "${!v:-}" ] || { printf '缺少配置 %s（用环境变量或 scripts/handeye.local.sh 设置）\n' "$v" >&2; missing=1; }
   done
   [ "$missing" -eq 0 ] || exit 4
+}
+
+# 按 `|` 拆出多素材列的元素，保留空段（尾随空段也要留住，否则与 path 下标错位）。
+# 结果写全局数组 PIPE_SPLIT_OUT。单值（无 `|`）得到长度 1 的数组。
+# 原在 bootstrap_android / bootstrap_ios / fetch_media 各有一份内联副本，已收拢至此。
+PIPE_SPLIT_OUT=()
+split_pipe() {  # $1 = 待拆字符串
+  local s="$1"
+  PIPE_SPLIT_OUT=()
+  while true; do
+    PIPE_SPLIT_OUT+=("${s%%|*}")
+    [ "$s" = "${s%%|*}" ] && break
+    s="${s#*|}"
+  done
+}
+
+# 相对段合法性校验：非空、非绝对路径、分段非空且非 '..'、字符集仅限字母数字点下划线连字符。
+# 该值会拼进 files 根与 deeplink 的 work_path query，挡住逃逸/特殊字符。
+# 原在 bootstrap_android / bootstrap_ios / fetch_media 各有一份内联副本，已收拢至此。
+is_valid_relative_path() {
+  local p="$1"
+  [ -n "$p" ] || return 1
+  case "$p" in /*) return 1 ;; esac   # 非绝对路径（[ 不支持裸 /* 模式，须走 case）
+  # 完整 .. 段 / 空段 / 首尾斜杠 → 违规；其余非法字符（非字母数字点下划线连字符斜杠）→ 违规
+  # `..` 裸段也要拒：`*/..` 模式要求前面有斜杠，挡不住整段就是 ".." 的值。
+  case "$p" in
+    ..|*/../*|../*|*/..|*//*|*/|/*) return 1 ;;
+  esac
+  case "$p" in
+    *[!A-Za-z0-9._/-]*) return 1 ;;
+  esac
+  return 0
 }
 
 # 设备选择（build / setup 共用的单份实现，替代各自内联副本）：
