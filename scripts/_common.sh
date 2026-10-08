@@ -16,11 +16,16 @@ load_config() {
     /*) ;;
     *)  FIXTURES_JSON="$HANDEYE_ROOT/$FIXTURES_JSON" ;;
   esac
-  [ -f "$FIXTURES_JSON" ] || FIXTURES_JSON="$HANDEYE_ROOT/fixtures/e2e.example.json"
+  if [ ! -f "$FIXTURES_JSON" ]; then
+    warn "FIXTURES_JSON 不存在：$FIXTURES_JSON，回退到示例配置"
+    FIXTURES_JSON="$HANDEYE_ROOT/fixtures/e2e.example.json"
+  fi
+  require_vars APP_ID HANDEYE_DEEPLINK_SCHEME
 }
 
 log()  { printf '==> %s\n' "$*"; }
-warn() { printf 'WARN: %s\n' "$*" >&2; }
+warn() { printf '警告: %s\n' "$*" >&2; }
+# die <msg> [exit_code]：打印错误并以指定退出码（默认 1）结束。
 die()  { printf '错误: %s\n' "$*" >&2; exit "${2:-1}"; }
 
 # 依赖检查：逐项打印安装指引，全部缺失项列出后统一退出（exit 4）。
@@ -34,13 +39,25 @@ require_tools() {
   [ "$missing" -eq 0 ] || exit 4
 }
 
+# 必填变量检查：列出每个缺失变量的名字与设置途径（环境变量或 handeye.local.sh），
+# 避免 bash 直接抛 unbound variable 让人摸不着头脑。全部缺失项列出后 exit 3。
+# 用法: require_vars "APP_ID" "HANDEYE_DEEPLINK_SCHEME"
+require_vars() {
+  local missing=0 v
+  for v in "$@"; do
+    [ -n "${!v:-}" ] || { printf '缺少配置 %s（用环境变量或 scripts/handeye.local.sh 设置）\n' "$v" >&2; missing=1; }
+  done
+  [ "$missing" -eq 0 ] || exit 3
+}
+
 # 等 App 进程出现，返回 pid（stdout）。40 次 × 0.5s = 20s 超时返回 1。
+# pidof 在罕见的多用户/重复安装场景可能返回多个 pid，只取第一个。
 # 调用前需设置 $ADB（"adb" 或 "adb -s <serial>"，本函数内不加引号、故意分词）。
 wait_app_pid() {
   local pid="" i
   for i in $(seq 1 40); do
-    pid="$($ADB shell pidof "$APP_ID" 2>/dev/null | tr -d '\r' || true)"
-    [ -n "$pid" ] && { printf '%s' "$pid"; return 0; }
+    pid="$($ADB shell pidof "$APP_ID" 2>/dev/null | tr -d '\r')"
+    [ -n "$pid" ] && { pid="${pid%% *}"; printf '%s' "$pid"; return 0; }
     sleep 0.5
   done
   return 1
@@ -48,6 +65,7 @@ wait_app_pid() {
 
 # 从 /proc/<pid>/net/tcp{,6} 反查 debug server 端口：只取 loopback LISTEN(0A) 候选，
 # 逐个 adb forward 后用 /health 实测，第一个应答者为准。（整网络命名空间可见，必须实测。）
+# 成功后那个可用的 adb forward 会刻意保留给调用方继续使用，不在此清理。
 # $1=pid，stdout=端口；找不到返回 1。
 discover_debug_server_port() {
   local pid="$1" hex dec
@@ -57,6 +75,7 @@ discover_debug_server_port() {
     | tr -d '\r' | sort -u)"
   while IFS= read -r hex; do
     [ -z "$hex" ] && continue
+    case "$hex" in *[!0-9a-fA-F]*) continue ;; esac  # 防御：非法 hex 会让 $((16#...)) 在 set -e 下直接退出
     dec=$((16#$hex)); [ "$dec" -gt 1024 ] || continue
     $ADB forward "tcp:$dec" "tcp:$dec" >/dev/null 2>&1 || continue
     if curl -sf -m 2 "http://127.0.0.1:$dec/health" >/dev/null 2>&1; then printf '%s' "$dec"; return 0; fi
@@ -64,6 +83,7 @@ discover_debug_server_port() {
   done <<EOF
 $candidates
 EOF
+  warn "pid $pid 的 loopback LISTEN 候选都未通过 /health 实测"
   return 1
 }
 
@@ -71,10 +91,11 @@ EOF
 probe_health() { # $1=baseUrl
   local i
   for i in $(seq 1 30); do
-    curl -sf -m 2 "$1/health" 2>/dev/null | grep -q '"ok":true' && return 0
+    curl -sf -m 2 "$1/health" 2>/dev/null | grep -Eq '"ok": ?true' && return 0
     sleep 0.5
   done
-  return 1
+  warn "$1/health 15s 内未就绪，最后重试一次"
+  curl -sf -m 2 "$1/health" 2>/dev/null | grep -Eq '"ok": ?true'
 }
 
 # 钩子执行器：依次尝试 $HANDEYE_HOOK_<NAME>（命令字符串）与 scripts/hooks/<name>.sh
@@ -89,6 +110,7 @@ run_hook() {
 }
 
 # 从脚本文件头部注释提取 usage（awk NR==1 跳 shebang），头部注释即 usage 数据源。
+# 假定第 1 行是 shebang（NR==1 无条件跳过）。
 usage_from_header() { # $1=脚本路径
   awk 'NR==1{next} /^#/{sub(/^# ?/,"");print;next}{exit}' "$1"
 }
