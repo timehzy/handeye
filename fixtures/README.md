@@ -57,8 +57,7 @@ orchestrator 的素材反查器（`FixtureCatalogValidator`）逐元素反查 sc
 | 字段 | 规则 |
 | --- | --- |
 | `device_path` | 设备沙盒相对段（如 `e2e_media/sample.mp4`）。合法性与 `scripts/fetch_media.sh` 的 `is_valid_relative_path` 校验一致：非空、非绝对路径、每个分段非空且不为 `..`、字符仅限字母数字与 `.` `_` `-`（含路径分隔 `/`）。非法段在反查阶段即报违规 |
-| `host_path` | host 侧素材文件**绝对路径**（`/` 开头）：设备沙盒没有该素材时作 push 源（Android 走 `fetch_media.sh`，iOS 走 `bootstrap_ios.sh`）。与 `smb_path` 都为空会被判「无可用源路径」违规。**模板里是占位符**，复制 local 后改成你机器上的实际路径 |
-| `smb_path` | 可选：共享盘兜底源（UNC `\\` 或已挂载绝对路径）。只用本地源时留空或省略 |
+| `host_path` | host 侧素材文件**绝对路径**（`/` 开头）：设备沙盒没有该素材时作 push 源（Android 走 `fetch_media.sh`，iOS 走 `bootstrap_ios.sh`）。为空会被判「无可用源路径（host_path 为空）」违规。**模板里是占位符**，复制 local 后改成你机器上的实际路径 |
 | `attrs` | 属性约束表，反查匹配依据。约束 key 与 scenario 声明的 key 同名等值比较；`minDurationMs` 是数值下界（毫秒），素材缺某个 key = 不满足该约束（被排除，不是报错）；`supportsSpeed` 取 `"true"` / `"false"`。attrs 非 object 的条目被跳过 |
 
 ## demo 与样例素材
