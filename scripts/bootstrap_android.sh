@@ -77,6 +77,8 @@ BASE_URL=""
 DEEPLINK=""
 
 # ---- 参数解析 ----
+# 注：--device-path 作为独立入口 DEFERRED 到 Task 14——素材参数的最终接口在 fetch_media.sh
+# 落地时定稿（Task 14 spec 定义 --device-path/--host），届时再对齐本脚本的素材入口。
 
 parse_args() {
   while [ $# -gt 0 ]; do
@@ -141,8 +143,9 @@ is_valid_relative_path() {
   [ -n "$p" ] || return 1
   case "$p" in /*) return 1 ;; esac   # 非绝对路径（[ 不支持裸 /* 模式，须走 case）
   # 完整 .. 段 / 空段 / 首尾斜杠 → 违规；其余非法字符（非字母数字点下划线连字符斜杠）→ 违规
+  # `..` 裸段也要拒：`*/..` 模式要求前面有斜杠，挡不住整段就是 ".." 的值。
   case "$p" in
-    */../*|../*|*/..|*//*|*/|/*) return 1 ;;
+    ..|*/../*|../*|*/..|*//*|*/|/*) return 1 ;;
   esac
   case "$p" in
     *[!A-Za-z0-9._/-]*) return 1 ;;
@@ -246,7 +249,8 @@ inject_deeplink() {
   log "deeplink 注入: $DEEPLINK（最多 3 次，暖机 ${WARMUP_SEC}s/次）"
   local attempt body
   for attempt in 1 2 3; do
-    $ADB shell am force-stop "$APP_ID"
+    # force-stop 失败多为设备抖动（adb 瞬断），吞掉走重试，不能用 adb 原始退出码杀掉脚本
+    $ADB shell am force-stop "$APP_ID" 2>/dev/null || true
     # launcher 暖机：把 App 拉到前台走完冷启动初始化（monkey 不可用时静默跳过，靠暖机等待兜底）
     $ADB shell monkey -p "$APP_ID" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || true
     sleep "$WARMUP_SEC"   # 暖机等价窗口（上游热跑捷径的经验值）
