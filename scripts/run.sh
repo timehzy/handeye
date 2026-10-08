@@ -534,6 +534,17 @@ ensure_bootstrap_demo() { # $1 = source（plan source 列：设备沙盒相对�
     SETUP_DONE=1
   fi
 
+  # 登记本组建/复用过的 forward 端口供 cleanup 全摘：契约行 HOST_PORT 一定是可用隧道口；
+  # DEVICE_PORT 覆盖 bootstrap 反查阶段自建的 discovery forward（HOST==DEVICE 时去重合并）。
+  # 两者都不是用户 --host-port 隧道（那口从不进登记表），摘除安全。
+  record_forward "$hp"
+  local dp
+  dp=$(printf '%s\n' "$out" | grep -E '^HANDEYE_DEVICE_PORT=' | tail -1 | sed -E 's/^HANDEYE_DEVICE_PORT=([0-9]+).*/\1/')
+  case "$dp" in
+    ''|*[!0-9]*) : ;;  # 契约行缺失/被破坏：只登记 HOST_PORT
+    *) record_forward "$dp" ;;
+  esac
+
   # 本 run 已成功 build+install（或确认新鲜）——后续组一律跳过重装
   INSTALL_FLAGS="--skip-build --skip-install"
   return 0
@@ -560,29 +571,55 @@ ensure_bootstrap() { # $1 = page, $2 = source, $3 = host_path（plan host 列，
 # ---- setup + health ----
 # setup_android.sh 只建 adb forward（无后台进程），成功后 forward 刻意保留复用；
 # App 重启可能换 debug server 端口，/health 探不通时重建一次 forward 再探。
-# 已知限制：多 key 组会多次 adb forward 累积（每组各自端口），卸载/重装设备后如端口
-# 异常，需手动 `adb forward --remove-all` 清理。
+# 多 key 组会各自建/复用 forward（每组端口可能不同，bootstrap 反查阶段还可能在其
+# DEVICE_PORT 上另建 discovery forward）——全部登记进 CREATED_FORWARDS，cleanup 时
+# 逐条摘除，不再逐组残留（原「需手动 adb forward --remove-all」已知限制就此解除）。
 
 SETUP_DONE=0
 BASE_URL=""
 HOST_PORT=""
 FORWARD_CREATED=0
 TAIL_PID=""
+# 本 run 建/复用过的 adb forward 登记表，元素为 "serial:hostPort"（serial 可空）。
+# 用户 --host-port 带入的隧道从不进表，cleanup 绝不动（见 ensure_setup_and_health）。
+CREATED_FORWARDS=()
 
-# 收尾：停 events tailer + 移除本脚本建的 adb forward（--host-port 用户自建的不动）。
+# 登记一个本脚本链路确认存在过的 forward host 端口（去重）。调用点：do_setup 成功、
+# ensure_bootstrap_demo 解析到契约行（HOST_PORT + DEVICE_PORT，后者覆盖 bootstrap
+# 反查自建的 discovery forward；HOST==DEVICE 时去重自然合并成一条）。
+record_forward() { # $1 = hostPort
+  local pair="${SERIAL:+$SERIAL:}$1" e
+  for e in ${CREATED_FORWARDS[@]+"${CREATED_FORWARDS[@]}"}; do
+    [ "$e" = "$pair" ] && return 0
+  done
+  CREATED_FORWARDS+=("$pair")
+}
+
+# 收尾：停 events tailer + 逐条摘除本 run 登记过的 adb forward。
 # EXIT trap 兜底正常收尾与异常中断；snapshot 子命令 exec 走不到这里（那时也没建过隧道）。
 cleanup() {
   if [ -n "${TAIL_PID:-}" ]; then
     kill "$TAIL_PID" 2>/dev/null || true
     TAIL_PID=""
   fi
-  if [ "${FORWARD_CREATED:-0}" = "1" ] && [ -n "${HOST_PORT:-}" ]; then
-    printf '\n==> 清理 adb forward tcp:%s\n' "$HOST_PORT"
-    # 故意用裸 adb 而非 $ADB：adb forward --remove 是 host 侧操作，与设备无关，但需要
-    # preflight 里 export 的 ANDROID_SERIAL 才能在多机时命中同一台设备——这是隐式耦合，
-    # 别为了「统一风格」改成 $ADB（cleanup 时 $ADB 变量可能已不可用，且语义本就不依赖 -s）
-    adb forward --remove "tcp:$HOST_PORT" 2>/dev/null || true
-  fi
+  # 无 adb 环境（纯 host 自检 / mock 冒烟）：静默跳过转发清理，不报错
+  command -v adb >/dev/null 2>&1 || return 0
+  local entry serial hp
+  for entry in ${CREATED_FORWARDS[@]+"${CREATED_FORWARDS[@]}"}; do
+    serial="${entry%%:*}"
+    hp="${entry#*:}"
+    printf '\n==> 清理 adb forward tcp:%s\n' "$hp"
+    # serial 取自登记对（即本 run 目标机）；serial 为空时靠 preflight export 的
+    # ANDROID_SERIAL 命中同一台设备。沿用裸 adb 而非 $ADB：cleanup 时 $ADB 变量可能
+    # 已不可用，且本操作语义本就不依赖 -s（与旧单端口实现同 rationale）
+    if [ -n "$serial" ]; then
+      adb -s "$serial" forward --remove "tcp:$hp" 2>/dev/null \
+        || warn "adb forward --remove tcp:$hp 失败（可能已被清理或本不存在）"
+    else
+      adb forward --remove "tcp:$hp" 2>/dev/null \
+        || warn "adb forward --remove tcp:$hp 失败（可能已被清理或本不存在）"
+    fi
+  done
 }
 trap cleanup EXIT
 
@@ -602,6 +639,7 @@ do_setup() {
   fi
   HOST_PORT="$hp"
   FORWARD_CREATED=1
+  record_forward "$HOST_PORT"
   BASE_URL="http://127.0.0.1:$HOST_PORT"
   SETUP_DONE=1
 }
@@ -1036,6 +1074,59 @@ STUB
   FRESHNESS_JUDGED=0; INSTALL_FLAGS=""; LAST_BOOTSTRAP_KEY=""
   SERIAL=""; USER_HOST_PORT=""
   HOST_PORT=""; BASE_URL=""; FORWARD_CREATED=0; SETUP_DONE=0
+
+  # 转发登记 + cleanup 全摘（backlog：多组批跑 adb forward 累积泄漏）：
+  # 两组不同端口 + 重复登记去重 + serial 命中 + 用户 --host-port 端口不得摘除 +
+  # 无 adb 环境静默跳过。stub adb 记录 --remove 调用，stub curl 让 --host-port 探活成功。
+  local adb_stub remove_log noadb_out
+  adb_stub=$(mktemp -d)
+  cat > "$adb_stub/adb" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_REMOVE_LOG"
+exit 0
+STUB
+  cat > "$adb_stub/curl" <<'STUB'
+#!/bin/sh
+printf '%s' '{"ok": true}'
+STUB
+  chmod +x "$adb_stub/adb" "$adb_stub/curl"
+  remove_log="$adb_stub/removes.log"
+  : > "$remove_log"
+  export ADB_REMOVE_LOG="$remove_log"
+
+  CREATED_FORWARDS=()
+  SERIAL="TESTSERIAL"
+  record_forward 40321
+  record_forward 40321   # 重复登记：应去重
+  record_forward 40443   # 组2：App 换端口，bootstrap 在另一 host 端口另建
+  [ "${#CREATED_FORWARDS[@]}" -eq 2 ] \
+    || { echo "SELFTEST FAIL: 转发登记未去重（${#CREATED_FORWARDS[@]} != 2）" >&2; rm -rf "$adb_stub"; return 1; }
+
+  old_path=$PATH
+  PATH="$adb_stub:$PATH"
+  cleanup
+  # --host-port 分支：probe 成功后不得登记任何 forward（用户隧道绝不动）
+  USER_HOST_PORT="55055"; SETUP_DONE=0
+  ensure_setup_and_health >/dev/null 2>&1 \
+    || { echo "SELFTEST FAIL: --host-port 分支 probe 应成功" >&2; PATH=$old_path; rm -rf "$adb_stub"; return 1; }
+  PATH=$old_path
+  USER_HOST_PORT=""
+  [ "${#CREATED_FORWARDS[@]}" -eq 2 ] \
+    || { echo "SELFTEST FAIL: --host-port 分支误登记 forward（表内 ${#CREATED_FORWARDS[@]} 条）" >&2; rm -rf "$adb_stub"; return 1; }
+  grep -qx -- '-s TESTSERIAL forward --remove tcp:40321' "$remove_log" \
+    || { echo "SELFTEST FAIL: cleanup 未摘 40321（$(cat "$remove_log")）" >&2; rm -rf "$adb_stub"; return 1; }
+  grep -qx -- '-s TESTSERIAL forward --remove tcp:40443' "$remove_log" \
+    || { echo "SELFTEST FAIL: cleanup 未摘 40443（$(cat "$remove_log")）" >&2; rm -rf "$adb_stub"; return 1; }
+  [ "$(grep -c -- '--remove tcp:40321' "$remove_log")" -eq 1 ] \
+    || { echo "SELFTEST FAIL: 40321 被重复摘除" >&2; rm -rf "$adb_stub"; return 1; }
+  # 无 adb 环境：cleanup 静默跳过（不输出、不报错）
+  CREATED_FORWARDS=("TESTSERIAL:40321")
+  noadb_out=$(PATH="/nonexistent-handeye-noadb" cleanup 2>&1) || true
+  [ -z "$noadb_out" ] \
+    || { echo "SELFTEST FAIL: 无 adb 环境 cleanup 应静默（输出: $noadb_out）" >&2; rm -rf "$adb_stub"; return 1; }
+  CREATED_FORWARDS=()
+  SERIAL=""
+  rm -rf "$adb_stub"
 
   echo "SELFTEST OK"
   return 0
