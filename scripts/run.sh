@@ -191,12 +191,21 @@ ci_info() { printf '[info] %s\n' "$*"; }
 
 # 配置来源归因（三级：env = 环境变量 > local = handeye.local.sh > example = 默认值）。
 # load_config 之后所有变量必有值，归因靠回溯三个来源：先看真实环境变量，再 grep
-# local.sh 是否有该变量的赋值行（兼容 `VAR=x` 与 `: "${VAR:=x}"` 两种写法），都不是
-# 即 example 默认。local.sh 里被注释掉的行不算（行首 # 排除）。
+# local.sh 是否有该变量的赋值行，都不是即 example 默认。
+# 已知边界（不修）：local.sh 非 export 变量会覆写已导出的 env 值（_common.sh source
+# 顺序的既定交互），此时归因仍标 [env]、显示的却是 local 值——local.sh 覆写已导出
+# 环境变量属于配置误用，提示意义已足够。
 config_source() { # $1 = 变量名 → stdout: env / local / example
   local var="$1" local_file="$HANDEYE_ROOT/scripts/handeye.local.sh"
   if printenv "$var" >/dev/null 2>&1; then printf 'env'; return; fi
-  if [ -f "$local_file" ] && grep -q "^[^#]*${var}=" "$local_file"; then printf 'local'; return; fi
+  # local.sh 赋值两种写法都认：`VAR=x` 与 `: "${VAR:=x}"`。行首锚定（跳过上架注释靠
+  # 下面的字符类）+ 变量名后紧跟赋值符，天然排除 HANDEYE_FOO 命中 HANDEYE_FOO_BAR /
+  # OTHER_HANDEYE_FOO 的边界误报
+  if [ -f "$local_file" ] \
+    && { grep -qE "^[[:space:]]*${var}=" "$local_file" \
+      || grep -qE "^[[:space:]]*: \"\\\${${var}:=" "$local_file"; }; then
+    printf 'local'; return
+  fi
   printf 'example'
 }
 
@@ -211,7 +220,8 @@ print_effective_config() {
   done
 }
 
-# 在 $ANDROID_HOME/build-tools（未设则回退常见 SDK 安装路径）下探测 aapt，取版本号最新的。
+# 在 $ANDROID_HOME/build-tools（未设则回退常见 SDK 安装路径）下探测 aapt：
+# 候选目录按版本号排序（sort -V），取首个含可执行 aapt 的。
 find_aapt() {
   local d best=""
   for d in $( { [ -n "${ANDROID_HOME:-}" ] && ls -d "$ANDROID_HOME/build-tools"/*; \
@@ -289,13 +299,14 @@ ci_android() {
 ci_ios() {
   local dir="$IOS_PROJECT_DIR" podfile
   case "$dir" in /*) ;; *) dir="$HANDEYE_ROOT/$dir" ;; esac
+  dir="${dir%/}"; [ -n "$dir" ] || dir="/"   # 去尾斜杠（example 默认 demo-ios/），防双斜杠路径
   podfile="$dir/Podfile"
   if [ ! -d "$dir" ]; then
     ci_warn "IOS_PROJECT_DIR 不存在: $dir（iOS 接入方式见 docs/integration-points.md）"
   elif [ ! -f "$podfile" ]; then
     ci_info "未找到 Podfile: $podfile（非 CocoaPods 工程？iOS 接入方式见 docs/integration-points.md）"
   elif grep -q ":path" "$podfile"; then
-    ci_ok "Podfile 检测到本地 framework 依赖（:path pod）: $podfile"
+    ci_info "Podfile 检测到本地 framework 依赖（:path pod）: $podfile"
   else
     ci_warn "Podfile 未检测到本地 framework 依赖；若走 KMP framework 接入，参考 docs/samples/ios-podfile-local.rb"
   fi
@@ -677,8 +688,9 @@ record_group_result() { # $1 = 组号 $2 = page $3 = source $4 = members $5 = lo
         res="未跑"
       fi
     fi
+    # 行内分隔用 TAB：source 可能含多素材 `|` 连接（plan 契约列），用 | 会冲断列解析
     SUMMARY="${SUMMARY:+$SUMMARY
-}组$g|$page|${source:-<默认>}|$name|$res"
+}组$g$TAB$page$TAB${source:-<默认>}$TAB$name$TAB$res"
   done
 }
 
@@ -686,7 +698,7 @@ print_summary() {
   echo ""
   log "汇总（$ART_DIR/run.log）"
   printf '%-6s %-12s %-22s %-28s %s\n' 组 page source 场景 结果
-  printf '%s\n' "$SUMMARY" | awk -F'|' '{printf "%-6s %-12s %-22s %-28s %s\n", $1, $2, $3, $4, $5}'
+  printf '%s\n' "$SUMMARY" | awk -F'\t' '{printf "%-6s %-12s %-22s %-28s %s\n", $1, $2, $3, $4, $5}'
 }
 
 # ---- 主流程 ----
@@ -825,15 +837,25 @@ selftest() {
   [ "$(group_members 1)" = "one,two" ] || { echo "SELFTEST FAIL: 组1 members '$(group_members 1)'" >&2; return 1; }
   [ "$(group_members 2)" = "three" ] || { echo "SELFTEST FAIL: 组2 members '$(group_members 2)'" >&2; return 1; }
 
-  # 汇总回填：PASS 契约行 / FAIL 契约行 / orchestrator 合成异常行 / quit 未跑
+  # 汇总回填：PASS 契约行 / FAIL 契约行 / orchestrator 合成异常行 / quit 未跑。
+  # 行内分隔是 TAB（source 可能含多素材 | 连接，| 会冲断列解析）
   logf=$(mktemp)
   printf '[PASS] alpha (12ms)\n[FAIL] beta (30ms)\n[FAIL] \345\234\272\346\231\257 gamma \345\244\261\350\264\245: IOException: boom\n==> Summary: 1/3 passed\n' > "$logf"
   SUMMARY=""
   record_group_result 1 demo "" "alpha,beta,gamma,delta" "$logf" ""
-  printf '%s\n' "$SUMMARY" | grep -qF '组1|demo|<默认>|alpha|PASS' || { echo "SELFTEST FAIL: 汇总 alpha" >&2; rm -f "$logf"; return 1; }
-  printf '%s\n' "$SUMMARY" | grep -qF '组1|demo|<默认>|beta|FAIL' || { echo "SELFTEST FAIL: 汇总 beta" >&2; rm -f "$logf"; return 1; }
-  printf '%s\n' "$SUMMARY" | grep -qF '组1|demo|<默认>|gamma|FAIL' || { echo "SELFTEST FAIL: 汇总 gamma（合成异常行未识别）" >&2; rm -f "$logf"; return 1; }
-  printf '%s\n' "$SUMMARY" | grep -qF '组1|demo|<默认>|delta|未跑' || { echo "SELFTEST FAIL: 汇总 delta（quit 未跑应标未跑）" >&2; rm -f "$logf"; return 1; }
+  printf '%s\n' "$SUMMARY" | grep -qF "组1${TAB}demo${TAB}<默认>${TAB}alpha${TAB}PASS" || { echo "SELFTEST FAIL: 汇总 alpha" >&2; rm -f "$logf"; return 1; }
+  printf '%s\n' "$SUMMARY" | grep -qF "组1${TAB}demo${TAB}<默认>${TAB}beta${TAB}FAIL" || { echo "SELFTEST FAIL: 汇总 beta" >&2; rm -f "$logf"; return 1; }
+  printf '%s\n' "$SUMMARY" | grep -qF "组1${TAB}demo${TAB}<默认>${TAB}gamma${TAB}FAIL" || { echo "SELFTEST FAIL: 汇总 gamma（合成异常行未识别）" >&2; rm -f "$logf"; return 1; }
+  printf '%s\n' "$SUMMARY" | grep -qF "组1${TAB}demo${TAB}<默认>${TAB}delta${TAB}未跑" || { echo "SELFTEST FAIL: 汇总 delta（quit 未跑应标未跑）" >&2; rm -f "$logf"; return 1; }
+
+  # 多素材 source（含 |）不回冲汇总列：source 整列保留、结果列仍正确
+  printf '[PASS] multi (7ms)\n' > "$logf"
+  SUMMARY=""
+  record_group_result 2 demo "e2e_media/a.mp4|e2e_media/b.mp4" "multi" "$logf" ""
+  [ "$(printf '%s\n' "$SUMMARY" | awk -F"$TAB" '$4=="multi"{print $3}')" = "e2e_media/a.mp4|e2e_media/b.mp4" ] \
+    || { echo "SELFTEST FAIL: 多素材 source 列被冲断（$SUMMARY）" >&2; rm -f "$logf"; return 1; }
+  [ "$(printf '%s\n' "$SUMMARY" | awk -F"$TAB" '$4=="multi"{print $5}')" = "PASS" ] \
+    || { echo "SELFTEST FAIL: 多素材 source 结果列错位（$SUMMARY）" >&2; rm -f "$logf"; return 1; }
   rm -f "$logf"
 
   # events tailer：fake curl 固定返回两条 events，验证轮询打行格式与 seq 推进
