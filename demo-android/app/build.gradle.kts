@@ -14,6 +14,8 @@ android {
         targetSdk = libs.versions.android.target.get().toInt()
         versionCode = 1
         versionName = "0.1.0"
+        // 与 local.sh 的 HANDEYE_DEEPLINK_SCHEME 对应；改 scheme 时两边一起改
+        buildConfigField("String", "HANDEYE_SCHEME", "\"handeye\"")
     }
 
     buildTypes {
@@ -48,4 +50,7 @@ dependencies {
     implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.7")
+
+    // 单测走 kotlin-test（JVM 跑，android 类型不进测试面）
+    testImplementation(kotlin("test"))
 }

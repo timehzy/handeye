@@ -4,7 +4,6 @@ import dev.handeye.orchestrator.runner.ScenarioResult
 
 enum class HostPage(val id: String) {
     DEMO("demo"),
-    STORY("story"),
 }
 
 /**

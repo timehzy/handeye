@@ -17,8 +17,8 @@ class FixtureCatalogValidatorTest {
     private fun scenario(vararg constraints: Map<String, String>): ScenarioMeta =
         ScenarioMeta(
             name = "speed_range_confirm_then_undo_restores",
-            tags = setOf("story", "speed"),
-            page = HostPage.STORY,
+            tags = setOf("speed"),
+            page = HostPage.DEMO,
             fixture = MediaNeed(constraints.toList()),
             run = { _ -> error("not used") },
         )
@@ -31,7 +31,7 @@ class FixtureCatalogValidatorTest {
     }
 
     private fun mediaEntry(devicePath: String, attrs: String) =
-        """{"device_path":"$devicePath","host_path":"/tmp/$devicePath","smb_path":"\\\\10.0.159.200\\$devicePath","attrs":{$attrs}}"""
+        """{"device_path":"$devicePath","host_path":"/tmp/$devicePath","attrs":{$attrs}}"""
 
     @Test
     fun `素材时长满足下界返回选中素材`() {
@@ -72,7 +72,7 @@ class FixtureCatalogValidatorTest {
     fun `首条缺 attrs 挡路第二条满足命中`() {
         // 首条无 attrs、第二条满足约束 → 应跳过首条继续反查，而非 return null 误报无匹配
         val catalog = catalogJson(
-            """{"device_path":"x.mp4","host_path":"/tmp/x.mp4","smb_path":"y"}""",
+            """{"device_path":"x.mp4","host_path":"/tmp/x.mp4"}""",
             mediaEntry("a.mp4", "\"supportsSpeed\":\"true\""),
         )
         val (resolved, violations) = FixtureCatalogValidator.resolve(
@@ -85,7 +85,7 @@ class FixtureCatalogValidatorTest {
 
     @Test
     fun `命中素材 device_path 为空记违规`() {
-        val catalog = catalogJson("""{"device_path":"","host_path":"/tmp/x.mp4","smb_path":"y","attrs":{"supportsSpeed":"true"}}""")
+        val catalog = catalogJson("""{"device_path":"","host_path":"/tmp/x.mp4","attrs":{"supportsSpeed":"true"}}""")
         val (_, violations) = FixtureCatalogValidator.resolve(
             listOf(scenario(mapOf("supportsSpeed" to "true"))),
             catalog,
@@ -210,7 +210,7 @@ class FixtureCatalogValidatorTest {
     fun `attrs 非 object 条目跳过不抛异常`() {
         // attrs 写成数组，jsonObject 转换应安全跳过该条目，不能抛未包装异常
         val catalog = catalogJson(
-            """{"device_path":"a.mp4","host_path":"/tmp/a.mp4","smb_path":"y","attrs":[]}""",
+            """{"device_path":"a.mp4","host_path":"/tmp/a.mp4","attrs":[]}""",
         )
         val (_, violations) = FixtureCatalogValidator.resolve(
             listOf(scenario(mapOf("supportsSpeed" to "true"))),
@@ -223,7 +223,7 @@ class FixtureCatalogValidatorTest {
     fun `attrs 值非 primitive 条目跳过不抛异常`() {
         // supportsSpeed 写成数组而非字符串，应安全跳过
         val catalog = catalogJson(
-            """{"device_path":"a.mp4","host_path":"/tmp/a.mp4","smb_path":"y","attrs":{"supportsSpeed":["true"]}}""",
+            """{"device_path":"a.mp4","host_path":"/tmp/a.mp4","attrs":{"supportsSpeed":["true"]}}""",
         )
         val (_, violations) = FixtureCatalogValidator.resolve(
             listOf(scenario(mapOf("supportsSpeed" to "true"))),
@@ -246,16 +246,16 @@ class FixtureCatalogValidatorTest {
     }
 
     @Test
-    fun `host_path 与 smb_path 都为空记违规`() {
+    fun `host_path 为空记违规`() {
         val catalog = catalogJson(
-            """{"device_path":"a.mp4","host_path":"","smb_path":"","attrs":{"supportsSpeed":"true"}}""",
+            """{"device_path":"a.mp4","host_path":"","attrs":{"supportsSpeed":"true"}}""",
         )
         val (_, violations) = FixtureCatalogValidator.resolve(
             listOf(scenario(mapOf("supportsSpeed" to "true"))),
             catalog,
         )
         assertEquals(
-            listOf("反查命中的素材无可用源路径（host_path / smb_path 都为空）"),
+            listOf("反查命中的素材无可用源路径（host_path 为空）"),
             violations["speed_range_confirm_then_undo_restores"],
         )
     }
@@ -263,7 +263,7 @@ class FixtureCatalogValidatorTest {
     @Test
     fun `host_path 非绝对路径记违规`() {
         val catalog = catalogJson(
-            """{"device_path":"a.mp4","host_path":"relative/a.mp4","smb_path":"\\\\10.0.159.200\\share\\a.mp4","attrs":{"supportsSpeed":"true"}}""",
+            """{"device_path":"a.mp4","host_path":"relative/a.mp4","attrs":{"supportsSpeed":"true"}}""",
         )
         val (_, violations) = FixtureCatalogValidator.resolve(
             listOf(scenario(mapOf("supportsSpeed" to "true"))),
@@ -276,25 +276,10 @@ class FixtureCatalogValidatorTest {
     }
 
     @Test
-    fun `smb_path 非 UNC 且非绝对路径记违规`() {
-        val catalog = catalogJson(
-            """{"device_path":"a.mp4","host_path":"/tmp/a.mp4","smb_path":"just-a-name","attrs":{"supportsSpeed":"true"}}""",
-        )
-        val (_, violations) = FixtureCatalogValidator.resolve(
-            listOf(scenario(mapOf("supportsSpeed" to "true"))),
-            catalog,
-        )
-        assertEquals(
-            listOf("反查命中的素材 smb_path 非法（非 UNC 或已挂载绝对路径，just-a-name）"),
-            violations["speed_range_confirm_then_undo_restores"],
-        )
-    }
-
-    @Test
     fun `host_path 含中文空格仍是合法源路径`() {
         // host_path 源路径不收紧字符集，中文/空格/连字符是合法本地路径
         val catalog = catalogJson(
-            """{"device_path":"a.mp4","host_path":"/Volumes/技术中心-测试部/C-t/视频 a.mp4","smb_path":"","attrs":{"supportsSpeed":"true"}}""",
+            """{"device_path":"a.mp4","host_path":"/Volumes/技术中心-测试部/C-t/视频 a.mp4","attrs":{"supportsSpeed":"true"}}""",
         )
         val (resolved, violations) = FixtureCatalogValidator.resolve(
             listOf(scenario(mapOf("supportsSpeed" to "true"))),

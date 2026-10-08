@@ -1,0 +1,16 @@
+{
+  "devices": {
+    "android_serial": "",
+    "ios_udid": ""
+  },
+  "media": [
+    {
+      "device_path": "e2e_media/sample.mp4",
+      "host_path": "/ABSOLUTE/PATH/TO/handeye/fixtures/media/sample.mp4",
+      "attrs": {
+        "minDurationMs": "1000",
+        "supportsSpeed": "true"
+      }
+    }
+  ]
+}

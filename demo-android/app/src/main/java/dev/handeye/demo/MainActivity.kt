@@ -1,6 +1,7 @@
 package dev.handeye.demo
 
 import android.app.Activity
+import android.content.Intent
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -23,6 +24,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleBootstrapIntent(intent)
         viewModel = (application as FeedApp).viewModel
 
         val refresh = SwipeRefreshLayout(this)
@@ -44,9 +46,19 @@ class MainActivity : Activity() {
         if (savedInstanceState == null) viewModel.onRefresh()
     }
 
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        handleBootstrapIntent(intent)
+    }
+
     override fun onDestroy() {
         uiScope.cancel()
         super.onDestroy()
+    }
+
+    /** bootstrap deeplink 落值：冷启动走 onCreate，热启动走 onNewIntent。 */
+    private fun handleBootstrapIntent(intent: Intent?) {
+        BootstrapIntentParser.parse(intent)?.let { BootstrapState.args.value = it }
     }
 }
 

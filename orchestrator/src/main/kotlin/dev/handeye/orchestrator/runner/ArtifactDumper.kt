@@ -10,7 +10,7 @@ import java.time.format.DateTimeFormatter
  *
  * 只在 `reporter.hasFailure() == true` 时触发；PASS 场景零 IO。
  *
- * 落盘目录：`insedit/e2e/artifacts/<yyyy-MM-dd-HHmmss>/<scenarioName>/`
+ * 落盘目录：`<repo-root>/e2e/artifacts/<yyyy-MM-dd-HHmmss>/<scenarioName>/`
  * 落盘文件：host context 提供的 raw artifacts，以及 projected-facts.json / report.md。
  *
  * Raw artifacts parallel dump（任一失败不阻塞其它）；projected-facts / report.md 依 store 已有产物。
@@ -25,7 +25,7 @@ object ArtifactDumper {
             .firstOrNull { root ->
                 File(root, "settings.gradle.kts").isFile && File(root, "e2e").isDirectory
             }
-            ?: error("Unable to locate insedit repository root from ${cwd.absolutePath}; set e2e.artifactsRoot")
+            ?: error("Unable to locate repository root from ${cwd.absolutePath}; set e2e.artifactsRoot")
         return File(repositoryRoot, "e2e/artifacts")
     }
 
@@ -38,7 +38,7 @@ object ArtifactDumper {
     ): String? {
         if (!reporter.hasFailure()) return null
         val ts = LocalDateTime.now().format(TS_FMT)
-        // 通过系统属性 e2e.artifactsRoot 覆盖；默认向上定位 insedit 仓库根目录，
+        // 通过系统属性 e2e.artifactsRoot 覆盖；默认向上定位仓库根目录，
         // 因而 Gradle :e2e-scenarios:run 的 e2e-scenarios cwd 不会产生嵌套路径。
         val artifactsRoot = System.getProperty("e2e.artifactsRoot")
             ?.let(::File)

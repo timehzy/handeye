@@ -95,6 +95,7 @@ class FeedApp : Application() {
                     },
                     stateProvider("memory") { repository.snapshotCache() },
                     stateProvider("persist") { repository.snapshotPersist() },
+                    stateProvider("bootstrap") { BootstrapState.args.value },
                 ),
                 commands = CommandRegistry().apply {
                     register("Feed.Refresh") { viewModel.onRefresh() }

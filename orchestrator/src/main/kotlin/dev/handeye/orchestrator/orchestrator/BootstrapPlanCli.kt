@@ -20,19 +20,18 @@ import java.io.File
  *
  * ## 输出契约（stdout，供 e2e.sh 逐行解析）
  *
- * 每行一个 scenario，Tab 分隔五列，顺序与注入 registry 的定义一致：
+ * 每行一个 scenario，Tab 分隔四列，顺序与注入 registry 的定义一致：
  *
  * ```
- * <name>\t<page>\t<source>\t<host_path>\t<smb_path>
+ * <name>\t<page>\t<source>\t<host_path>
  * ```
  *
- * - `page`：[HostPage.id]（`demo` / `story`）
+ * - `page`：[HostPage.id]（当前仅 `demo`）
  * - `source`：media 需求反查出的 `device_path` 相对段（如 `e2e_media/xxx.mp4`）；draft 需求
  *   输出 `draft:<key>`
- * - `host_path` / `smb_path`：media 需求反查素材的两条源路径（Mac 本地 / 共享盘），供脚本
- *   三级兜底；draft 需求两列为空
+ * - `host_path`：media 需求反查素材的 host 本地源路径，供脚本拉取兜底；draft 需求该列为空
  *
- * media 需求声明多个素材时，`source` / `host_path` / `smb_path` 三列各自按 `|` 连接，列内
+ * media 需求声明多个素材时，`source` / `host_path` 两列各自按 `|` 连接，列内
  * 元素顺序与需求的 `needs` 顺序一致（`e2e.sh` 按 `|` 拆回多个素材）。
  *
  * ## 退出码
@@ -68,7 +67,7 @@ object BootstrapPlanCli {
             } catch (e: FixtureCatalogValidator.CatalogMissingException) {
                 System.err.println("错误: ${e.message}")
                 if (scenarios.any { it.fixture is MediaNeed }) {
-                    System.err.println("本批次含 MediaNeed 场景，缺少 catalog 无法反查素材（检查 MVI_E2E_FIXTURES_JSON 或 fixtures 目录）")
+                    System.err.println("本批次含 MediaNeed 场景，缺少 catalog 无法反查素材（检查 HANDEYE_FIXTURES_JSON 或 fixtures 目录）")
                     return 2
                 }
                 System.err.println("本批次无 MediaNeed 场景，跳过素材反查")
@@ -92,34 +91,32 @@ object BootstrapPlanCli {
         }
 
         for (meta in scenarios) {
-            val (source, hostPath, smbPath) = when (val need = meta.fixture) {
+            val (source, hostPath) = when (val need = meta.fixture) {
                 is MediaNeed -> {
                     val list = resolved[meta.name] ?: emptyList()
-                    Triple(
-                        list.joinToString("|") { it.devicePath },
-                        list.joinToString("|") { it.hostPath.orEmpty() },
-                        list.joinToString("|") { it.smbPath.orEmpty() },
-                    )
+                    list.joinToString("|") { it.devicePath } to
+                        list.joinToString("|") { it.hostPath.orEmpty() }
                 }
-                is DraftNeed -> Triple("draft:${need.key}", "", "")
+                is DraftNeed -> "draft:${need.key}" to ""
             }
-            println("${meta.name}\t${meta.page.id}\t$source\t$hostPath\t$smbPath")
+            println("${meta.name}\t${meta.page.id}\t$source\t$hostPath")
         }
         return 0
     }
 
     /**
-     * 解析 fixtures catalog 路径：`MVI_E2E_FIXTURES_JSON` > `e2e.local.json`（本机覆盖）>
-     * `e2e.example.json`（模板回退）。相对候选覆盖 working dir 在 `insedit/` 根或
-     * `e2e-scenarios/` 子项目两种 gradle run 布局；本机 catalog 存在时优先用本机值。
+     * 解析 fixtures catalog 路径：`HANDEYE_FIXTURES_JSON` > `e2e.local.json`（本机覆盖）>
+     * `e2e.example.json`（模板回退）。相对候选覆盖两种运行布局的 working dir：仓库根
+     * （orchestrator CLI 直跑）与 `demo-android/e2e/` 子工程（`:demo-android:e2e:run`，
+     * 仓库根在其 `../..`）；本机 catalog 存在时优先用本机值。
      */
     private fun defaultCatalogJson(): File {
-        val env = System.getenv("MVI_E2E_FIXTURES_JSON")
+        val env = System.getenv("HANDEYE_FIXTURES_JSON")
         if (!env.isNullOrBlank()) return File(env)
         val candidates = listOf(
-            "e2e-scenarios/fixtures/e2e.local.json",
+            "../../fixtures/e2e.local.json",
             "fixtures/e2e.local.json",
-            "e2e-scenarios/fixtures/e2e.example.json",
+            "../../fixtures/e2e.example.json",
             "fixtures/e2e.example.json",
         )
         return candidates.firstOrNull { File(it).exists() }?.let { File(it) }
