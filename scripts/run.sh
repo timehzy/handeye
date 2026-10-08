@@ -43,8 +43,9 @@
 #   成功后置 "--skip-build --skip-install"，后续组只重启不重装）。
 #   page=demo：bootstrap 整体委托 bootstrap_android.sh（N2 已落地，替代 v1 内联
 #   build+am-start fast-path）——build/install、冷启动、deeplink 进态、建隧道都归它；
-#   组素材 source 列以 --media-path 透传（多素材 | 连接与其 split_pipe 语义一致，plan 反查
-#   已保证相对段合法），设备已有素材即跳过 push，缺素材时 bootstrap 委派 fetch_media.sh
+#   组素材 source 列（设备沙盒相对段，多素材 | 连接与其 split_pipe 语义一致，plan 反查
+#   已保证相对段合法）以 --media-path 透传，host_path 列（host 侧绝对路径，只作 push 源）
+#   以 --media-host 透传；设备已有素材即跳过 push，缺素材时 bootstrap 委派 fetch_media.sh
 #   两级兜底（设备已有 → host 本地）自动拉取，失败以 exit 5 清晰早报，不影响其它组。
 #
 # 前置:
@@ -383,18 +384,24 @@ TAB=$(printf '\t')
 PLAN_OUT=""
 GROUP_KEYS=""
 GROUP_MEMBERS=""
+GROUP_HOSTS=""
 
 # 从 plan 文本（$1，每行 name<TAB>page<TAB>source<TAB>host<TAB>smb）构建分组。
 # 只消费契约行（防 gradle/JVM 警告混入 stdout 污染解析）。
+# GROUP_HOSTS 与 GROUP_KEYS 平行（行号即组号）：host（第 4 列，host 侧素材绝对路径，可空）
+# 取同 key 首现行的值——source 才是分组键，契约上同 (page, source) 组的 host 应一致，
+# 不一致时以首现为准（与成员聚合同策略，不另开组）。
 build_groups() {
   GROUP_KEYS=""
   GROUP_MEMBERS=""
-  local line name page source key at
+  GROUP_HOSTS=""
+  local line name page source host key at
   while IFS= read -r line; do
     [ -z "$line" ] && continue
     name=$(printf '%s' "$line" | awk -F'\t' '{print $1}')
     page=$(printf '%s' "$line" | awk -F'\t' '{print $2}')
     source=$(printf '%s' "$line" | awk -F'\t' '{print $3}')
+    host=$(printf '%s' "$line" | awk -F'\t' '{print $4}')
     key="$page$TAB$source"
     # 已有同 key 组则成员追加（逗号），否则新开组
     at=$(printf '%s\n' "$GROUP_KEYS" | grep -nF -x -- "$key" 2>/dev/null | head -1 | cut -d: -f1)
@@ -406,6 +413,8 @@ build_groups() {
 }$key"
       GROUP_MEMBERS="${GROUP_MEMBERS:+$GROUP_MEMBERS
 }$name"
+      GROUP_HOSTS="${GROUP_HOSTS:+$GROUP_HOSTS
+}$host"
     fi
   done <<EOF
 $1
@@ -414,9 +423,10 @@ EOF
 
 group_count() { printf '%s\n' "$GROUP_KEYS" | grep -c . || true; }
 
-# 取第 $1 组（1 起）的 key / members
+# 取第 $1 组（1 起）的 key / members / host（plan host_path 列，可空）
 group_key()     { printf '%s\n' "$GROUP_KEYS"    | sed -n "${1}p"; }
 group_members() { printf '%s\n' "$GROUP_MEMBERS" | sed -n "${1}p"; }
+group_host()    { printf '%s\n' "$GROUP_HOSTS"   | sed -n "${1}p"; }
 
 # ---- 分组 bootstrap ----
 # 三个全局态（语义对齐上游 e2e.sh [2/3]）：
@@ -435,8 +445,18 @@ SERIAL=""
 # build+am-start fast-path）。素材/换页/草稿的细粒度判定、冷启动、deeplink 注入、
 # 端口隧道都归那个脚本；run.sh 只传开关、解析契约行、维护 INSTALL_FLAGS 复用态。
 # 上游 ensure_bootstrap_main 对应段。
-ensure_bootstrap_demo() { # $1 = source（plan source 列：沙盒相对段，多素材 | 连接，可空）
-  local source="$1"
+
+# 数 split_pipe 语义下的元素个数（与 bootstrap split_pipe 同款：保留尾随空段，无 '|' = 1）。
+# 用于预判 source 列的素材数；不引数组，避免为一次计数引入全局态。
+pipe_split_count() { # $1 = 待拆字符串，stdout = 元素数
+  local s="$1" n=1
+  while [ "$s" != "${s#*|}" ]; do n=$((n + 1)); s="${s#*|}"; done
+  printf '%s' "$n"
+}
+
+ensure_bootstrap_demo() { # $1 = source（plan source 列：设备沙盒相对段，多素材 | 连接，可空）
+                          # $2 = host_path（plan host_path 列：host 侧素材绝对路径，可空）
+  local source="$1" host_path="${2:-}"
   local args=() out rc=0 hp
 
   # 新鲜度只判定一次、结论复用：首组把判定交给 build_install_android.sh 内部
@@ -446,11 +466,24 @@ ensure_bootstrap_demo() { # $1 = source（plan source 列：沙盒相对段，�
     INSTALL_FLAGS=""
   fi
 
-  # 组素材需求透传 --media-path（plan source 列与 bootstrap split_pipe 语义一致：多素材
-  # | 连接；plan 反查阶段已校验相对段合法性）。设备已有素材时 bootstrap 内部跳过 push，
-  # 缺素材时委派 fetch_media.sh 两级兜底（host 源来自 catalog 源路径），失败以 exit 5
-  # 清晰早报（本组判失败，不影响其它组）。
-  [ -z "$source" ] || args+=("--media-path" "$source")
+  # 组素材需求透传 --media-path / --media-host（plan 的 source / host_path 两列）：
+  #   source 列 = 设备沙盒相对段（多素材 | 连接，与 bootstrap split_pipe 语义一致，
+  #   plan 反查阶段已校验相对段合法性）；host_path 列 = host 侧素材绝对路径，只作
+  #   push 源——它不是设备相对段，不做 is_valid_relative_path 校验（语义不同，勿后人误加）。
+  # 设备已有素材时 bootstrap 内部跳过 push，缺素材时委派 fetch_media.sh 两级兜底
+  # （host 源即本列），失败以 exit 5 清晰早报（本组判失败，不影响其它组）。
+  if [ -n "$source" ]; then
+    args+=("--media-path" "$source")
+    if [ -n "$host_path" ]; then
+      # bootstrap 已知限制（Task 11 记录的 m3）：--media-host 只归 | 分隔列的最后一个元素。
+      # 用 split_pipe 同款语义预判：多素材 + host 单值时 warn 说明覆盖范围，仍透传
+      # （与 bootstrap 行为一致，不静默丢）；单素材直通。
+      if [ "$(pipe_split_count "$source")" -gt 1 ]; then
+        warn "组含多素材（$(pipe_split_count "$source") 个）但 host 列为单值：--media-host 只覆盖 | 分隔的最后一个元素，其余元素需预置在设备上"
+      fi
+      args+=("--media-host" "$host_path")
+    fi
+  fi
   # 多机时必须把选中的设备传下去（bootstrap 内部 resolve_device 同理，双保险）。
   # 用 || 而非 && 短路：SERIAL 为空时整条 && 列表返回非零，在 set -e 函数体内会误杀脚本
   [ -z "$SERIAL" ] || args+=("-s" "$SERIAL")
@@ -505,8 +538,8 @@ ensure_bootstrap_demo() { # $1 = source（plan source 列：沙盒相对段，�
 }
 
 # page 分发。上游还有 story 页；本仓 demo 场景全在 demo 页，其它页早报失败不影响其它组。
-ensure_bootstrap() { # $1 = page, $2 = source
-  local page="$1" source="$2"
+ensure_bootstrap() { # $1 = page, $2 = source, $3 = host_path（plan host 列，可空）
+  local page="$1" source="$2" host_path="${3:-}"
   local key="$page$TAB$source"
   if [ -n "$LAST_BOOTSTRAP_KEY" ] && [ "$key" = "$LAST_BOOTSTRAP_KEY" ]; then
     log "同页同素材，跳过 bootstrap"
@@ -514,7 +547,7 @@ ensure_bootstrap() { # $1 = page, $2 = source
   fi
   local rc=0
   case "$page" in
-    demo) ensure_bootstrap_demo "$source" || rc=1 ;;
+    demo) ensure_bootstrap_demo "$source" "$host_path" || rc=1 ;;
     *)    warn "page=$page 的 bootstrap 未落地（v1 仅 demo 页），本组跳过"; rc=1 ;;
   esac
   [ "$rc" -eq 0 ] && LAST_BOOTSTRAP_KEY="$key"
@@ -749,7 +782,7 @@ main() {
   # [2/3] 分组
   log "[2/3] 按 (page, source) 稳定分组"
   build_groups "$plan_lines"
-  local n g page source members
+  local n g page source host_path members
   n=$(group_count)
   printf '    本批次 %s 行契约，分 %s 组（page<TAB>source 稳定分组）\n' \
     "$(printf '%s\n' "$plan_lines" | grep -c .)" "$n"
@@ -780,13 +813,14 @@ main() {
   while [ "$g" -le "$n" ]; do
     page=$(group_key "$g" | awk -F'\t' '{print $1}')
     source=$(group_key "$g" | awk -F'\t' '{print $2}')
+    host_path=$(group_host "$g")
     members=$(group_members "$g")
     echo ""
-    log "[3/3] 分组 $g/$n · page=$page source=${source:-<默认>}（场景: $members）"
+    log "[3/3] 分组 $g/$n · page=$page source=${source:-<默认>}${host_path:+ host=${host_path}}（场景: $members）"
 
     group_pause "$g" "$n" "page=$page source=${source:-<默认>}"
 
-    if ! ensure_bootstrap "$page" "$source"; then
+    if ! ensure_bootstrap "$page" "$source" "$host_path"; then
       FAILED=1
       record_group_result "$g" "$page" "$source" "$members" "" "bootstrap 失败"
       g=$((g + 1))
@@ -842,11 +876,13 @@ selftest() {
     *) echo "SELFTEST FAIL: 组1 key '$(group_key 1)'" >&2; return 1 ;;
   esac
   [ "$(group_members 1)" = "alpha,beta,delta" ] || { echo "SELFTEST FAIL: 组1 members '$(group_members 1)'" >&2; return 1; }
+  [ "$(group_host 1)" = "e2e_media/a.mp4" ] || { echo "SELFTEST FAIL: 组1 host '$(group_host 1)'" >&2; return 1; }
   case "$(group_key 2)" in
     "story${TAB}e2e_media/s.mp4") : ;;
     *) echo "SELFTEST FAIL: 组2 key '$(group_key 2)'" >&2; return 1 ;;
   esac
   [ "$(group_members 2)" = "gamma,epsilon" ] || { echo "SELFTEST FAIL: 组2 members '$(group_members 2)'" >&2; return 1; }
+  [ "$(group_host 2)" = "x/y.mp4" ] || { echo "SELFTEST FAIL: 组2 host '$(group_host 2)'" >&2; return 1; }
 
   # source 列含空 host/smb 段时分组不错位；key 首现顺序稳定
   plan=$(printf 'one\tdemo\t\th1\ts1\ntwo\tdemo\t\th2\ts2\nthree\tstory\ts\th\ts')
@@ -908,6 +944,7 @@ selftest() {
   # ensure_bootstrap_demo 接线：stub bootstrap_android.sh 记录 argv、按 env 决定输出/退出码，
   # 验证 ①source 透传 --media-path ②-s 透传 ③HANDEYE_HOST_PORT 契约行 → BASE_URL/SETUP_DONE
   # ④INSTALL_FLAGS 复用态 ⑤非零退出 → 本组失败且不污染复用态 ⑥缺契约行 → 失败
+  # ⑦host_path 透传 --media-host：单素材直传；多素材仍透传但打「只覆盖最后元素」warn
   local stub_dir old_script_dir
   stub_dir=$(mktemp -d)
   cat > "$stub_dir/bootstrap_android.sh" <<'STUB'
@@ -938,6 +975,27 @@ STUB
     || { echo "SELFTEST FAIL: 契约行解析/BASE_URL/SETUP_DONE（base=$BASE_URL setup=$SETUP_DONE）" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1; }
   [ "$INSTALL_FLAGS" = "--skip-build --skip-install" ] \
     || { echo "SELFTEST FAIL: INSTALL_FLAGS 未置复用态（'$INSTALL_FLAGS'）" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1; }
+
+  # ⑦a 单素材 + host_path：--media-host 直传，不打多素材 warn
+  export STUB_ARGS_FILE="$stub_dir/args1b"; export STUB_RC=0; unset STUB_NO_CONTRACT || true
+  INSTALL_FLAGS=""
+  ensure_bootstrap_demo "e2e_media/a.mp4" "/host/media/a.mp4" >/dev/null 2>"$stub_dir/warn1b" \
+    || { echo "SELFTEST FAIL: 单素材 --media-host 路径返回非 0" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1; }
+  grep -qx -- "--media-host" "$stub_dir/args1b" && grep -qx -- "/host/media/a.mp4" "$stub_dir/args1b" \
+    || { echo "SELFTEST FAIL: 单素材 --media-host 透传丢失（$(cat "$stub_dir/args1b")）" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1; }
+  if grep -q '只覆盖' "$stub_dir/warn1b"; then
+    echo "SELFTEST FAIL: 单素材不应打多素材 host 覆盖 warn" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1
+  fi
+
+  # ⑦b 多素材 + host 单值：--media-host 仍透传（不静默丢），且 stderr 打覆盖范围 warn
+  export STUB_ARGS_FILE="$stub_dir/args1c"
+  INSTALL_FLAGS=""
+  ensure_bootstrap_demo "e2e_media/a.mp4|e2e_media/b.mp4" "/host/media/b.mp4" >/dev/null 2>"$stub_dir/warn1c" \
+    || { echo "SELFTEST FAIL: 多素材 --media-host 路径返回非 0" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1; }
+  grep -qx -- "--media-host" "$stub_dir/args1c" && grep -qx -- "/host/media/b.mp4" "$stub_dir/args1c" \
+    || { echo "SELFTEST FAIL: 多素材 --media-host 透传丢失（$(cat "$stub_dir/args1c")）" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1; }
+  grep -q '只覆盖' "$stub_dir/warn1c" && grep -q '预置在设备上' "$stub_dir/warn1c" \
+    || { echo "SELFTEST FAIL: 多素材 host 覆盖 warn 缺失（$(cat "$stub_dir/warn1c")）" >&2; SCRIPT_DIR=$old_script_dir; rm -rf "$stub_dir"; return 1; }
 
   # 失败路径：退出码 6 → 返回 1 且复用态不置位。SERIAL 置空走一遍，覆盖空 serial
   # 分支（args 不加 -s；旧 && 写法在此场景会触发 set -e 误杀，回归防护）
